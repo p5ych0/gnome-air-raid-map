@@ -11,13 +11,14 @@ const MAX_CACHE_AGE_MS = 3600000;
 export function appPaths() {
     const runtime = GLib.getenv('XDG_RUNTIME_DIR');
     if (!runtime) throw new Error('XDG_RUNTIME_DIR is not set');
-    const stateDir = GLib.build_filenamev([GLib.get_user_state_dir(), APP]);
+    const runtimeDir = GLib.build_filenamev([runtime, APP]);
     return {
-        runtimeDir: GLib.build_filenamev([runtime, APP]),
+        runtimeDir,
         cacheDir: GLib.build_filenamev([GLib.get_user_cache_dir(), APP]),
-        stateDir,
+        stateDir: GLib.build_filenamev([GLib.get_user_state_dir(), APP]),
         dataDir: GLib.build_filenamev([GLib.get_user_data_dir(), APP]),
-        statePath: GLib.build_filenamev([stateDir, 'state.json']),
+        // The state file is in RAM and is deleted at logout (spec 5.5).
+        statePath: GLib.build_filenamev([runtimeDir, 'state.json']),
     };
 }
 

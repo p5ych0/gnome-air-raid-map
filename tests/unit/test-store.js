@@ -1,9 +1,39 @@
 // SPDX-License-Identifier: MIT
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertRejects} from '../lib/assert.js';
 import {startServer} from '../lib/fixture-server.js';
 import {createSession} from '../../updater/net.js';
 import {loadGeometry, readJson, writeJsonAtomic} from '../../updater/store.js';
+
+const STORE_URL = GLib.Uri.resolve_relative(import.meta.url, '../../updater/store.js', GLib.UriFlags.NONE);
+
+// GJS reads some XDG folders when it starts, so appPaths runs in a new process
+// with the given environment (null removes a variable).
+function appPathsWith(env) {
+    const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.STDOUT_PIPE});
+    for (const [name, value] of Object.entries(env)) {
+        if (value === null) launcher.unsetenv(name);
+        else launcher.setenv(name, value, true);
+    }
+    const script = `import('${STORE_URL}').then(m => m.appPaths())
+        .then(paths => print(JSON.stringify(paths)), e => print(JSON.stringify({error: e.message})))`;
+    const [, stdout] = launcher.spawnv(['gjs', '-c', script]).communicate_utf8(null, null);
+    return JSON.parse(stdout);
+}
+
+test('app paths come from the XDG variables', () => assertDeepEqual(appPathsWith({
+    XDG_RUNTIME_DIR: '/x/run', XDG_CACHE_HOME: '/x/cache', XDG_STATE_HOME: '/x/state', XDG_DATA_HOME: '/x/data',
+}), {
+    runtimeDir: '/x/run/gnome-air-raid-map',
+    cacheDir: '/x/cache/gnome-air-raid-map',
+    stateDir: '/x/state/gnome-air-raid-map',
+    dataDir: '/x/data/gnome-air-raid-map',
+    statePath: '/x/run/gnome-air-raid-map/state.json',
+}));
+
+test('missing XDG_RUNTIME_DIR is an error', () =>
+    assertDeepEqual(appPathsWith({XDG_RUNTIME_DIR: null}), {error: 'XDG_RUNTIME_DIR is not set'}));
 
 function square(key, prop, name) {
     return {type: 'Feature', properties: {key, [prop]: name}, geometry: {
