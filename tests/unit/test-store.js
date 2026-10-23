@@ -151,6 +151,41 @@ test('offline with valid cache uses the cache', () => withFixture(async ({server
     assertEqual(result.version, '"o1"|"r1"');
 }));
 
+// Boundary routes without an ETag, like the directory fixture server.
+function withoutEtags(server) {
+    server.setRoute('/oblasts.geojson', {body: collection('region', 'o1')});
+    server.setRoute('/raions.geojson', {body: collection('rayon', 'r1')});
+}
+const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, text, -1);
+
+test('without etags changed content changes the version', () => withFixture(async ({server, dir, session}) => {
+    withoutEtags(server);
+    const first = await loadGeometry(session, server.base, dir, 1000000);
+    server.setRoute('/oblasts.geojson', {body: collection('region', 'o2')});
+    const changed = await loadGeometry(session, server.base, dir, 1000000 + 3600001);
+    assertEqual(server.hits.get('/oblasts.geojson'), 2);
+    assertEqual(changed.geometry.oblasts.regions[0].key, 'o2');
+    assertTrue(changed.version !== first.version, 'changed content keeps the version');
+    assertEqual(first.version, `${sha256(collection('region', 'o1'))}|${sha256(collection('rayon', 'r1'))}`);
+}));
+
+test('without etags the same content keeps the version', () => withFixture(async ({server, dir, session}) => {
+    withoutEtags(server);
+    const first = await loadGeometry(session, server.base, dir, 1000000);
+    const again = await loadGeometry(session, server.base, dir, 1000000 + 3600001);
+    assertEqual(server.hits.get('/oblasts.geojson'), 2);
+    assertEqual(again.version, first.version);
+}));
+
+test('without etags a fresh cache returns the stored version', () => withFixture(async ({server, dir, session}) => {
+    withoutEtags(server);
+    const first = await loadGeometry(session, server.base, dir, 1000000);
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertEqual(server.hits.get('/oblasts.geojson'), 1);
+    assertEqual(readJson(path(dir, 'geometry.json'), null).oblasts.version, sha256(collection('region', 'o1')));
+    assertEqual(result.version, first.version);
+}));
+
 test('offline without cache rejects', () => withFixture(async ({server, dir, session}) => {
     server.stop();
     await assertRejects(loadGeometry(session, server.base, dir, 1000000));

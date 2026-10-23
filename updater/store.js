@@ -49,16 +49,21 @@ function loadValid(path) {
     }
 }
 
+// The digest of the file content, the version of a file without an ETag.
+const digest = json => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, JSON.stringify(json), -1);
+
 async function loadOne(session, url, path, entry, now) {
     const cached = loadValid(path);
-    const known = cached && entry && typeof entry.etag === 'string' ? entry : null;
+    const known = cached && entry && typeof entry.etag === 'string' && typeof entry.version === 'string'
+        ? entry : null;
     if (cached && known && typeof known.checkedAt === 'number' &&
         now - known.checkedAt >= 0 && now - known.checkedAt < MAX_CACHE_AGE_MS)
         return {geometry: cached.geometry, entry: known, changed: false};
     // A failed request or an invalid download keeps a valid cached file.
     const keepCache = error => {
         if (!cached) throw error;
-        return {geometry: cached.geometry, entry: known || {etag: '', checkedAt: 0}, changed: false};
+        return {geometry: cached.geometry,
+            entry: known || {etag: '', version: digest(cached.json), checkedAt: 0}, changed: false};
     };
     let result;
     try {
@@ -67,7 +72,8 @@ async function loadOne(session, url, path, entry, now) {
         return keepCache(e);
     }
     if (result.status === 304 && cached && known)
-        return {geometry: cached.geometry, entry: {etag: known.etag, checkedAt: now}, changed: true};
+        return {geometry: cached.geometry, entry: {etag: known.etag, version: known.version, checkedAt: now},
+            changed: true};
     // Without a known ETag no If-None-Match was sent, so a 304 is a failed request.
     if (result.status === 304) return keepCache(new Error('Unexpected HTTP 304'));
     let geometry;
@@ -77,7 +83,9 @@ async function loadOne(session, url, path, entry, now) {
         return keepCache(e);
     }
     writeJsonAtomic(path, result.json);
-    return {geometry, entry: {etag: result.etag || '', checkedAt: now}, changed: true};
+    // Without an ETag, changed content must still change the version and so the render key.
+    const etag = result.etag || '';
+    return {geometry, entry: {etag, version: etag || digest(result.json), checkedAt: now}, changed: true};
 }
 
 export async function loadGeometry(session, base, cacheDir, now) {
@@ -91,6 +99,6 @@ export async function loadGeometry(session, base, cacheDir, now) {
         writeJsonAtomic(metaPath, {oblasts: oblasts.entry, raions: raions.entry});
     return {
         geometry: {oblasts: oblasts.geometry, raions: raions.geometry},
-        version: `${oblasts.entry.etag}|${raions.entry.etag}`,
+        version: `${oblasts.entry.version}|${raions.entry.version}`,
     };
 }
