@@ -58,18 +58,21 @@ function loadValid(path) {
     }
 }
 
-// The metadata entry of a file holds only the ETag and the check time.
+// The metadata entry of a file holds only the ETag and the check time. Other fields of an
+// older file are not written back.
+const entryOf = known => ({etag: known.etag, checkedAt: known.checkedAt});
+
 async function loadOne(session, url, path, entry, now) {
     const cached = loadValid(path);
     const known = cached && entry && typeof entry.etag === 'string' ? entry : null;
     if (cached && known && typeof known.checkedAt === 'number' &&
         now - known.checkedAt >= 0 && now - known.checkedAt < MAX_CACHE_AGE_MS)
-        return {geometry: cached.geometry, version: cached.version, entry: known, changed: false};
+        return {geometry: cached.geometry, version: cached.version, entry: entryOf(known), changed: false};
     // A failed request or an invalid download keeps a valid cached file.
     const keepCache = error => {
         if (!cached) throw error;
         return {geometry: cached.geometry, version: cached.version,
-            entry: known || {etag: '', checkedAt: 0}, changed: false};
+            entry: known ? entryOf(known) : {etag: '', checkedAt: 0}, changed: false};
     };
     let result;
     try {

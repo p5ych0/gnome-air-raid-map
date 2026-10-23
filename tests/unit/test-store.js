@@ -215,6 +215,22 @@ test('304 to a request without an etag does not renew the cache time', () => wit
     assertEqual(server.hits.get('/oblasts.geojson'), 3, 'the next load does not request again');
 }));
 
+test('metadata entries hold only the etag and the check time', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    // A file of an older format: extra fields, one stale entry (revalidated) and one fresh entry (kept).
+    writeJsonAtomic(path(dir, 'geometry.json'), {
+        oblasts: {etag: '"o1"', checkedAt: 1000000, version: 'old'},
+        raions: {etag: '"r1"', checkedAt: 4990000, version: 'old'},
+    });
+    await loadGeometry(session, server.base, dir, 5000000);
+    assertEqual(server.hits.get('/oblasts.geojson'), 2);
+    assertEqual(server.hits.get('/raions.geojson'), 1);
+    assertDeepEqual(readJson(path(dir, 'geometry.json'), null), {
+        oblasts: {etag: '"o1"', checkedAt: 5000000},
+        raions: {etag: '"r1"', checkedAt: 4990000},
+    });
+}));
+
 test('offline without cache rejects', () => withFixture(async ({server, dir, session}) => {
     server.stop();
     await assertRejects(loadGeometry(session, server.base, dir, 1000000));
