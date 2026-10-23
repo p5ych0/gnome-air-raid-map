@@ -2,6 +2,7 @@
 // Feed state, the view model for render.js, status text and the render key.
 import GLib from 'gi://GLib';
 import {parseSnapshot, parseThreats, isStale} from './mapdata.js';
+import {ROTATING_TYPES} from './symbols.js';
 
 const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, text, -1);
 
@@ -25,8 +26,9 @@ export function failFeed(feed, message) {
 
 // The digests cover only what the picture draws (spec 4.1, 5.6). Undocumented
 // provider fields (version, seq, serverTime), undrawn entry fields and the entry
-// order change on every poll. The digests and the render key use the same
-// projections of the parse results.
+// order change on every poll. The digests and the render key carry the same
+// information, but for alerts they are not literally the same object: the digest
+// uses drawnAlerts (sorted entries), the view uses sortedAlerts (sorted maps).
 const byJson = items => items.map(item => [JSON.stringify(item), item])
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(pair => pair[1]);
 const pick = (item, fields) => Object.fromEntries(fields.map(field => [field, item[field]]));
@@ -39,12 +41,17 @@ export function drawnAlerts(parsed) {
     return byJson(entries);
 }
 
-// The parseThreats result without the fields that are not drawn (id, approximate). The
-// points are sorted: their order only decides which overlapping icon is on top. The areas
-// keep the provider's order, which the region-only list shows.
+// The parseThreats result without the fields that are not drawn (id, approximate). A
+// heading counts only for the types that rotate, and a count only above 1, as in marker.
+// The points are sorted: their order only decides which overlapping icon is on top. The
+// areas keep the provider's order, which the region-only list shows.
 export function drawnThreats(parsed) {
     return {
-        points: byJson(parsed.points.map(p => pick(p, ['type', 'point', 'advisory', 'heading', 'count']))),
+        points: byJson(parsed.points.map(p => ({
+            ...pick(p, ['type', 'point', 'advisory']),
+            heading: ROTATING_TYPES.includes(p.type) ? p.heading : null,
+            count: p.count > 1 ? p.count : 0,
+        }))),
         areas: parsed.areas.map(a => pick(a, ['region', 'label', 'count', 'advisory'])),
         count: parsed.count,
     };

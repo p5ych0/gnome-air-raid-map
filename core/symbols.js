@@ -49,16 +49,21 @@ export function draw(ctx, type, size, color) {
     ctx.restore();
 }
 
+// Only the types that have a reported direction rotate; the others always point north.
+export const ROTATING_TYPES = ["uav","recon","missile","ballistic","mig31k"];
+
 // bounds ({left, top, right, bottom}, in the coordinates of x and y) is optional. With
 // bounds, the group count moves sideways to stay inside them, and goes above the icon
-// if it would pass the bottom. The icon never moves.
+// if it would pass the bottom. The icon never moves. Only the left, right and bottom
+// bounds are enforced: render.js draws only markers below the top of the text area,
+// so a label above the icon cannot reach the top.
 export function marker(ctx, threat, x, y, size, bounds = null) {
     const color = threat.advisory ? "#9ad6f7" : "#ffffff";
     ctx.save();
     ctx.translate(x,y);
     // Only reported directions rotate silhouettes; presumed courses are omitted.
     ctx.save();
-    if (threat.heading !== null && ["uav","recon","missile","ballistic","mig31k"].includes(threat.type))
+    if (threat.heading !== null && ROTATING_TYPES.includes(threat.type))
         ctx.rotate(threat.heading * Math.PI / 180);
     draw(ctx, threat.type, size, color);
     ctx.restore();

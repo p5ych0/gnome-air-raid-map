@@ -158,6 +158,22 @@ test('threat ids, position quality and the point order are not a change', () => 
     }
 });
 
+test('a heading on a type that does not rotate and a count of 1 are not a change', () => {
+    const base = [{...uavGroup, count: 0}, {...kab, heading: 45}, north, south];
+    const a = threatsAt(emptyFeed(), base, now);
+    const key = feed => unchangedKey(fresh, feed, geometry, now + 30000);
+    for (const [name, threats] of Object.entries({
+        'kab heading': [{...uavGroup, count: 0}, {...kab, heading: 200}, north, south],
+        'kab without heading': [{...uavGroup, count: 0}, kab, north, south],
+        'count 1 instead of 0': [{...uavGroup, count: 1}, {...kab, heading: 45}, north, south],
+    })) {
+        const b = threatsAt(a, threats, now + 30000);
+        assertEqual(b.digest, a.digest, `${name}: digest`);
+        assertEqual(b.lastChange, now, `${name}: change time`);
+        assertEqual(key(b), key(a), `${name}: render key`);
+    }
+});
+
 test('a drawn threat change is a change', () => {
     const a = threatsAt(emptyFeed(), [uavGroup, kab, north, south], now);
     const key = feed => unchangedKey(fresh, feed, geometry, now + 30000);
