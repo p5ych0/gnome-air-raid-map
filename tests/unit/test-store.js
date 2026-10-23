@@ -42,18 +42,38 @@ function square(key, prop, name) {
 const collection = (prop, key) =>
     JSON.stringify({type: 'FeatureCollection', features: [square(key, prop, 'Test')]});
 
-function setup() {
+// Deletes a folder and everything in it.
+function removeTree(dirPath) {
+    const folder = Gio.File.new_for_path(dirPath);
+    const children = folder.enumerate_children('standard::name,standard::type',
+        Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+    for (let info = children.next_file(null); info !== null; info = children.next_file(null)) {
+        const child = folder.get_child(info.get_name());
+        if (info.get_file_type() === Gio.FileType.DIRECTORY) removeTree(child.get_path());
+        else child.delete(null);
+    }
+    children.close(null);
+    folder.delete(null);
+}
+
+// Runs fn with a fixture server and a new cache folder. Stops the server and
+// deletes the folder when fn is done, also when it fails.
+async function withFixture(fn) {
     const server = startServer({
         '/oblasts.geojson': {body: collection('region', 'o1'), etag: '"o1"'},
         '/raions.geojson': {body: collection('rayon', 'r1'), etag: '"r1"'},
     });
     const dir = GLib.dir_make_tmp('air-raid-store-XXXXXX');
-    return {server, dir, session: createSession({timeout: 5})};
+    try {
+        await fn({server, dir, session: createSession({timeout: 5})});
+    } finally {
+        server.stop();
+        removeTree(dir);
+    }
 }
 const path = (dir, name) => GLib.build_filenamev([dir, name]);
 
-test('first load downloads and caches', async () => {
-    const {server, dir, session} = setup();
+test('first load downloads and caches', () => withFixture(async ({server, dir, session}) => {
     const result = await loadGeometry(session, server.base, dir, 1000000);
     assertEqual(server.hits.get('/oblasts.geojson'), 1);
     assertEqual(server.hits.get('/raions.geojson'), 1);
@@ -61,21 +81,17 @@ test('first load downloads and caches', async () => {
     assertTrue(GLib.file_test(path(dir, 'raions.geojson'), GLib.FileTest.EXISTS));
     assertEqual(result.version, '"o1"|"r1"');
     assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
-    server.stop();
-});
+}));
 
-test('fresh cache makes no request', async () => {
-    const {server, dir, session} = setup();
+test('fresh cache makes no request', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     const result = await loadGeometry(session, server.base, dir, 1060000);
     assertEqual(server.hits.get('/oblasts.geojson'), 1);
     assertEqual(server.hits.get('/raions.geojson'), 1);
     assertEqual(result.version, '"o1"|"r1"');
-    server.stop();
-});
+}));
 
-test('old cache revalidates with etag', async () => {
-    const {server, dir, session} = setup();
+test('old cache revalidates with etag', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     const before = readJson(path(dir, 'oblasts.geojson'), null);
     const later = 1000000 + 3600001;
@@ -86,22 +102,18 @@ test('old cache revalidates with etag', async () => {
     assertDeepEqual(readJson(path(dir, 'oblasts.geojson'), null), before);
     assertEqual(readJson(path(dir, 'geometry.json'), null).oblasts.checkedAt, later);
     assertEqual(result.version, '"o1"|"r1"');
-    server.stop();
-});
+}));
 
-test('changed server copy is downloaded', async () => {
-    const {server, dir, session} = setup();
+test('changed server copy is downloaded', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     server.setRoute('/oblasts.geojson', {body: collection('region', 'o2'), etag: '"o2"'});
     const result = await loadGeometry(session, server.base, dir, 1000000 + 3600001);
     assertEqual(result.version, '"o2"|"r1"');
     assertEqual(result.geometry.oblasts.regions[0].key, 'o2');
     assertEqual(readJson(path(dir, 'oblasts.geojson'), null).features[0].properties.key, 'o2');
-    server.stop();
-});
+}));
 
-test('corrupt cache is downloaded again', async () => {
-    const {server, dir, session} = setup();
+test('corrupt cache is downloaded again', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     const file = path(dir, 'oblasts.geojson');
     const [, data] = GLib.file_get_contents(file);
@@ -110,11 +122,9 @@ test('corrupt cache is downloaded again', async () => {
     assertEqual(server.hits.get('/oblasts.geojson'), 2);
     assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
     assertDeepEqual(readJson(file, null), JSON.parse(collection('region', 'o1')));
-    server.stop();
-});
+}));
 
-test('304 without a known etag keeps the cache', async () => {
-    const {server, dir, session} = setup();
+test('304 without a known etag keeps the cache', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     GLib.unlink(path(dir, 'geometry.json'));
     server.setRoute('/oblasts.geojson', {status: 304});
@@ -123,40 +133,39 @@ test('304 without a known etag keeps the cache', async () => {
     assertEqual(server.hits.get('/oblasts.geojson'), 2);
     assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
     assertEqual(result.geometry.raions.regions[0].key, 'r1');
-    server.stop();
-});
+}));
 
-test('boundaries load at the same time', async () => {
-    const {server, dir, session} = setup();
+test('boundaries load at the same time', () => withFixture(async ({server, dir, session}) => {
     server.setRoute('/oblasts.geojson', {body: collection('region', 'o1'), etag: '"o1"', delayMs: 300});
     server.setRoute('/raions.geojson', {body: collection('rayon', 'r1'), etag: '"r1"', delayMs: 300});
     const result = await loadGeometry(session, server.base, dir, 1000000);
     assertEqual(server.maxWaiting, 2);
     assertEqual(result.version, '"o1"|"r1"');
-    server.stop();
-});
+}));
 
-test('offline with valid cache uses the cache', async () => {
-    const {server, dir, session} = setup();
+test('offline with valid cache uses the cache', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     server.stop();
     const result = await loadGeometry(session, server.base, dir, 1000000 + 7200000);
     assertEqual(result.geometry.raions.regions[0].key, 'r1');
     assertEqual(result.version, '"o1"|"r1"');
-});
+}));
 
-test('offline without cache rejects', async () => {
-    const {server, dir, session} = setup();
+test('offline without cache rejects', () => withFixture(async ({server, dir, session}) => {
     server.stop();
     await assertRejects(loadGeometry(session, server.base, dir, 1000000));
-});
+}));
 
 test('atomic json round trip', () => {
     const dir = GLib.dir_make_tmp('air-raid-json-XXXXXX');
-    const file = path(dir, 'sub/x.json');
-    writeJsonAtomic(file, {a: [1, 2], b: 'c'});
-    assertDeepEqual(readJson(file, null), {a: [1, 2], b: 'c'});
-    assertDeepEqual(readJson(path(dir, 'missing.json'), 'fb'), 'fb');
+    try {
+        const file = path(dir, 'sub/x.json');
+        writeJsonAtomic(file, {a: [1, 2], b: 'c'});
+        assertDeepEqual(readJson(file, null), {a: [1, 2], b: 'c'});
+        assertDeepEqual(readJson(path(dir, 'missing.json'), 'fb'), 'fb');
+    } finally {
+        removeTree(dir);
+    }
 });
 
 await run();
