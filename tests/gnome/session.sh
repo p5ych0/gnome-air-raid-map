@@ -5,6 +5,9 @@
 #   shell_eval <js>                 runs <js> in the Shell; prints the JSON result
 #   screenshot <path>               saves a PNG of the whole screen
 #   set_wallpaper <uri> <options>   sets picture-uri, picture-uri-dark, picture-options
+#   wait_shell <seconds> <js>       waits until <js> is true in the Shell
+#   stop_shell, start_shell <virtual-monitor ...>
+#                                   restart the Shell with other virtual monitors
 # Usage: session.sh <scenario> [virtual-monitor ...]   (default monitor: 1920x1080)
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -65,13 +68,45 @@ wait_shell() {
     return 1
 }
 
+shell_running() {
+    [ "$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.NameHasOwner org.gnome.Shell 2> /dev/null)" = "(true,)" ]
+}
+
+# wait works only in the shell that started the Shell, not in the subshell of a
+# scenario, so also wait until the Shell leaves the bus (10 s at most).
 stop_shell() {
     [ -n "${SHELL_PID:-}" ] || return 0
     kill "$SHELL_PID" 2> /dev/null
     wait "$SHELL_PID" 2> /dev/null
+    local i
+    for ((i = 0; i < 40; i++)); do
+        shell_running || break
+        sleep 0.25
+    done
     SHELL_PID=
 }
 trap stop_shell EXIT
+
+# Starts GNOME Shell with one --virtual-monitor for each argument and waits
+# until it shows the desktop. Returns 1 on a failure. The Shell log goes to
+# $OUT/shell.log; a restart adds to it.
+start_shell() {
+    local args=("${SHELL_ARGS[@]}") m i
+    for m in "$@"; do args+=(--virtual-monitor "$m"); done
+    gnome-shell "${args[@]}" >> "$OUT/shell.log" 2>&1 &
+    SHELL_PID=$!
+    for ((i = 0; i < 60; i++)); do
+        shell_running && break
+        kill -0 "$SHELL_PID" 2> /dev/null || { echo "gnome-shell exited; see $OUT/shell.log" >&2; return 1; }
+        sleep 1
+    done
+    [ $i -lt 60 ] || { echo "gnome-shell did not take the org.gnome.Shell name" >&2; return 1; }
+    wait_shell 30 '!Main.layoutManager._startingUp' || return 1
+    # GNOME opens the overview at startup; hide it so that the desktop background shows.
+    shell_eval 'Main.overview.hide(); true' > /dev/null || return 1
+    wait_shell 10 '!Main.overview.visible && !Main.overview.animationInProgress' || return 1
+}
 
 export XDG_SESSION_TYPE=wayland
 # GNOME Shell needs a system bus: the login and time-limit managers connect to it.
@@ -79,33 +114,19 @@ mkdir -p /run/dbus && dbus-daemon --system --fork
 # No logind in the container: without /run/systemd/seats the Shell uses its dummy login manager.
 rm -rf /run/systemd/seats
 
-args=(--headless --wayland --no-x11 --unsafe-mode)
+SHELL_ARGS=(--headless --wayland --no-x11 --unsafe-mode)
 export XDG_CURRENT_DESKTOP=GNOME
 if [ "${GNOME_TEST_IMAGE:-}" = ubuntu2404 ]; then
     # The ubuntu mode shows the dock. The [...:ubuntu] schema overrides apply
     # only with "ubuntu" in XDG_CURRENT_DESKTOP; they put the dock on the left
     # at full height, as on a real Ubuntu desktop (without them it is at the bottom).
-    args+=(--mode=ubuntu)
+    SHELL_ARGS+=(--mode=ubuntu)
     export XDG_CURRENT_DESKTOP=ubuntu:GNOME
 fi
 # The session runs as root, so GNOME 46 shows a "Logged in as a privileged
 # user" banner over the screen. Banners are off; messages stay in the list.
 gsettings set org.gnome.desktop.notifications show-banners false
-for m in "${MONITORS[@]}"; do args+=(--virtual-monitor "$m"); done
-gnome-shell "${args[@]}" > "$OUT/shell.log" 2>&1 &
-SHELL_PID=$!
-
-for ((i = 0; i < 60; i++)); do
-    [ "$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
-        --method org.freedesktop.DBus.NameHasOwner org.gnome.Shell 2> /dev/null)" = "(true,)" ] && break
-    kill -0 "$SHELL_PID" 2> /dev/null || { echo "gnome-shell exited; see $OUT/shell.log" >&2; exit 1; }
-    sleep 1
-done
-[ $i -lt 60 ] || { echo "gnome-shell did not take the org.gnome.Shell name" >&2; exit 1; }
-wait_shell 30 '!Main.layoutManager._startingUp' || exit 1
-# GNOME opens the overview at startup; hide it so that the desktop background shows.
-shell_eval 'Main.overview.hide(); true' > /dev/null || exit 1
-wait_shell 10 '!Main.overview.visible && !Main.overview.animationInProgress' || exit 1
+start_shell "${MONITORS[@]}" || exit 1
 # Without a GPU the Shell turns animations off (no fade between wallpapers).
 animations=$(shell_eval 'imports.gi.St.Settings.get().enable_animations' 2> /dev/null)
 echo "# $(gnome-shell --version), $(gjs --version), monitors ${MONITORS[*]}, animations ${animations:-unknown}" >&2
