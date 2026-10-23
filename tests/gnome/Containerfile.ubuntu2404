@@ -1,0 +1,10 @@
+# Ubuntu 24.04: GNOME Shell 46, GJS 1.80. Used by tests/gnome/run.sh.
+# Changes to the package list of the plan: yaru-theme-gnome-shell is added,
+# because gnome-shell --mode=ubuntu stops at startup without the Yaru theme.
+FROM docker.io/library/ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gnome-shell gjs gir1.2-soup-3.0 gir1.2-pango-1.0 dbus dconf-service \
+      gsettings-desktop-schemas fonts-noto-core gnome-shell-extension-ubuntu-dock \
+      yaru-theme-gnome-shell \
+    && rm -rf /var/lib/apt/lists/*

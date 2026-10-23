@@ -1,0 +1,6 @@
+# Fedora 44: GNOME Shell 50, GJS 1.88. Used by tests/gnome/run.sh.
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install --setopt=install_weak_deps=False \
+      gnome-shell gjs libsoup3 pango cairo-gobject gsettings-desktop-schemas \
+      dbus-daemon glib2 mesa-dri-drivers mesa-libEGL google-noto-sans-fonts \
+    && dnf clean all
