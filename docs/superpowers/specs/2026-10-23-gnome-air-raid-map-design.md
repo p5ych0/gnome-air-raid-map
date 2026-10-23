@@ -1,7 +1,7 @@
 # GNOME Air Raid Map: design
 
 - Date: 2026-10-23
-- Status: draft, waiting for approval
+- Status: complete, waiting for owner approval
 - Repository: `p5ych0/gnome-air-raid-map` (not created on GitHub yet)
 - Local folder: `~/Work/gnome-air-raid-map`
 - Reference project: `p5ych0/plasma-air-raid-map` 0.2.2, local folder `~/Work/map`
@@ -255,8 +255,17 @@ never comes from a fixed size, and GNOME must not crop or stretch the map.
   from the state file. If no layout was ever read, the run fails and does not
   guess a size.
 - **Settings:** `picture-uri` and `picture-uri-dark` point to the picture.
-- **Time labels:** minute precision (`HH:MM`). Then the picture changes at
-  most once per minute when the data does not change.
+- **Time labels (decision of the owner: A, with B as the fallback):**
+  - **A (default):** the corner shows "Оновлено HH:MM" (updated at), the
+    time of the last valid response. The picture changes once per minute
+    when the data does not change, and at most once per 30 seconds when the
+    data changes. The changing time shows the user that the map is live.
+  - **B (fallback):** the corner shows "Без змін з HH:MM" (no changes
+    since), the time of the last change in the data. The picture changes
+    only when the data or the stale state changes.
+  - **Gate:** check 5 of section 7.4 decides. If A fails that check, the
+    builder switches to B and reports the measurements to the owner.
+  - The stale rules of section 6.2 are the same in A and B.
 
 **Risk: mixed scales.** In `spanned` mode, Mutter multiplies the image size
 by the monitor scale but does not multiply the monitor offset. With two
