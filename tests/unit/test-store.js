@@ -2,6 +2,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertRejects} from '../lib/assert.js';
+import {removeTree} from '../lib/files.js';
 import {startServer} from '../lib/fixture-server.js';
 import {createSession} from '../../updater/net.js';
 import {loadGeometry, readJson, writeJsonAtomic} from '../../updater/store.js';
@@ -45,20 +46,6 @@ const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256
 // The version of each boundary file is the SHA-256 of its text.
 const version = (oblasts = 'o1', raions = 'r1') =>
     `${sha256(collection('region', oblasts))}|${sha256(collection('rayon', raions))}`;
-
-// Deletes a folder and everything in it.
-function removeTree(dirPath) {
-    const folder = Gio.File.new_for_path(dirPath);
-    const children = folder.enumerate_children('standard::name,standard::type',
-        Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
-    for (let info = children.next_file(null); info !== null; info = children.next_file(null)) {
-        const child = folder.get_child(info.get_name());
-        if (info.get_file_type() === Gio.FileType.DIRECTORY) removeTree(child.get_path());
-        else child.delete(null);
-    }
-    children.close(null);
-    folder.delete(null);
-}
 
 // Runs fn with a fixture server and a new cache folder. Stops the server and
 // deletes the folder when fn is done, also when it fails.

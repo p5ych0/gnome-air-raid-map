@@ -3,9 +3,10 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertRejects} from '../lib/assert.js';
+import {removeTree} from '../lib/files.js';
 import {startServer} from '../lib/fixture-server.js';
 import {syntheticCollection, syntheticGeometry, syntheticThreats} from '../lib/fixtures.js';
-import {assertColorNear} from '../lib/pixels.js';
+import {assertColorNear, pixelReaderFromPath} from '../lib/pixels.js';
 import {parseDisplayOverride} from '../../core/layout.js';
 import {project} from '../../core/mapdata.js';
 import {mapTransform, toScreen} from '../../core/render.js';
@@ -34,20 +35,6 @@ const display = text => () => parseDisplayOverride(text);
 const noDisplay = () => {
     throw new Error('Mutter is not running');
 };
-
-// Deletes a folder and everything in it.
-function removeTree(dirPath) {
-    const folder = Gio.File.new_for_path(dirPath);
-    const children = folder.enumerate_children('standard::name,standard::type',
-        Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
-    for (let info = children.next_file(null); info !== null; info = children.next_file(null)) {
-        const child = folder.get_child(info.get_name());
-        if (info.get_file_type() === Gio.FileType.DIRECTORY) removeTree(child.get_path());
-        else child.delete(null);
-    }
-    children.close(null);
-    folder.delete(null);
-}
 
 // Runs fn with a fixture server, a new temporary folder and settings in memory.
 // once(options) is one run with the values of main.js; options replace any of them.
@@ -80,15 +67,7 @@ function pictureSize(uri) {
 }
 
 // Returns (x, y) -> [r, g, b] for the PNG at uri.
-function readPicture(uri) {
-    const pixbuf = GdkPixbuf.Pixbuf.new_from_file(pathOf(uri));
-    const pixels = pixbuf.get_pixels();
-    const stride = pixbuf.get_rowstride(), channels = pixbuf.get_n_channels();
-    return (x, y) => {
-        const i = y * stride + x * channels;
-        return [pixels[i], pixels[i + 1], pixels[i + 2]];
-    };
-}
+const readPicture = uri => pixelReaderFromPath(pathOf(uri));
 
 // A point inside the synthetic square, away from the threat symbols, at 1920x1080.
 const INSIDE = toScreen(mapTransform(syntheticGeometry().oblasts.bounds, 1920, 1080), project([24, 45]))
