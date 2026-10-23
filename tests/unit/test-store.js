@@ -110,6 +110,19 @@ test('corrupt cache is downloaded again', async () => {
     server.stop();
 });
 
+test('304 without a known etag keeps the cache', async () => {
+    const {server, dir, session} = setup();
+    await loadGeometry(session, server.base, dir, 1000000);
+    GLib.unlink(path(dir, 'geometry.json'));
+    server.setRoute('/oblasts.geojson', {status: 304});
+    server.setRoute('/raions.geojson', {status: 304});
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertEqual(server.hits.get('/oblasts.geojson'), 2);
+    assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+    assertEqual(result.geometry.raions.regions[0].key, 'r1');
+    server.stop();
+});
+
 test('boundaries load at the same time', async () => {
     const {server, dir, session} = setup();
     server.setRoute('/oblasts.geojson', {body: collection('region', 'o1'), etag: '"o1"', delayMs: 300});

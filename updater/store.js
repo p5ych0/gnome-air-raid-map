@@ -66,9 +66,10 @@ async function loadOne(session, url, path, entry, now) {
     } catch (e) {
         return keepCache(e);
     }
-    if (result.status === 304 && cached)
+    if (result.status === 304 && cached && known)
         return {geometry: cached.geometry, entry: {etag: known.etag, checkedAt: now}, changed: true};
-    if (result.status === 304) throw new Error('Unexpected HTTP 304');
+    // Without a known ETag no If-None-Match was sent, so a 304 is a failed request.
+    if (result.status === 304) return keepCache(new Error('Unexpected HTTP 304'));
     let geometry;
     try {
         geometry = prepareGeometry(result.json);
