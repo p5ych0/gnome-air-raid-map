@@ -64,14 +64,15 @@ These settings did not change in these versions.
 ### 3.1 Goals
 
 1. The picture shows the same content as the Plasma project 0.2.2 (section 6).
-2. The picture follows the same data rules as the Plasma project (section 6.2).
-3. Nothing stays in memory between runs.
-4. One run uses less than 120 MB peak memory and less than 1 s of CPU time.
-5. Average CPU use stays below 1 % of one core.
-6. The project reuses the JavaScript of the Plasma project where possible.
-7. The picture always shows the NEPTUN attribution and the official-alerts notice.
-8. Install and uninstall need no root access.
-9. Uninstall puts back the wallpaper that the user had before.
+2. The picture uses the actual size and aspect ratio of each monitor (section 5.6).
+3. The picture follows the same data rules as the Plasma project (section 6.2).
+4. Nothing stays in memory between runs.
+5. One run uses less than 120 MB peak memory and less than 1 s of CPU time.
+6. Average CPU use stays below 1 % of one core.
+7. The project reuses the JavaScript of the Plasma project where possible.
+8. The picture always shows the NEPTUN attribution and the official-alerts notice.
+9. Install and uninstall need no root access.
+10. Uninstall puts back the wallpaper that the user had before.
 
 ### 3.2 Non-goals for the first release
 
@@ -215,18 +216,52 @@ The picture is in RAM for two reasons:
 
 ### 5.6 Picture and wallpaper settings
 
-- **Size:** the resolution of the primary monitor, in physical pixels. The
-  updater reads it from the `org.gnome.Mutter.DisplayConfig` D-Bus interface
-  (`GetCurrentState`). If that call fails, the size is 1920×1080.
-- **Scale:** the updater draws all text and symbols at the monitor scale.
-  Example: at 200 % scale, a 12-pixel icon becomes 24 physical pixels.
+**Requirement (from the owner): the picture uses the actual screen size and
+aspect ratio.** The map layout comes from the real size of each monitor. It
+never comes from a fixed size, and GNOME must not crop or stretch the map.
+
+- **Monitor layout:** each run reads the current monitor layout from the
+  `org.gnome.Mutter.DisplayConfig` D-Bus interface (`GetCurrentState`). For
+  each monitor, the layout gives the position, the size, the scale, and the
+  rotation. A rotated monitor swaps its width and height.
+- **One picture for all monitors:** `picture-options` is `spanned`. GNOME
+  maps one picture over the bounding box of all monitors. Each monitor shows
+  its own rectangle of the picture (`meta-background.c`, GNOME 46 and 50).
+- **One map for each monitor (decision of the designer):** the updater draws
+  a full map, with all text, inside the rectangle of each monitor. This
+  copies the Plasma project, where each screen has its own wallpaper. The map
+  layout uses the width and height of that rectangle, as `AlertMap.qml` does.
+- **Resolution:** the picture has enough pixels for the monitor with the
+  highest scale. Example: at 200 % scale, a 12-pixel icon becomes 24 physical
+  pixels. Text and lines are sharp on each monitor.
+- **Single monitor:** the picture is exactly the monitor size in physical
+  pixels. GNOME shows it 1:1, without scaling.
+- **Layout changes:** the monitor layout is part of the render key (section
+  5.4). After a change of resolution, rotation, scale, or monitors, the next
+  run draws a new picture. The delay is 30 seconds or less.
+- **No layout:** if the D-Bus call fails, the updater uses the last layout
+  from the state file. If no layout was ever read, the run fails and does not
+  guess a size.
 - **Settings:** `picture-uri` and `picture-uri-dark` point to the picture.
-  `picture-options` is `zoom`.
-- **Other monitors:** they show the same picture with `zoom`. If their aspect
-  ratio is different, GNOME crops the edges. This is accepted for the first
-  release.
 - **Time labels:** minute precision (`HH:MM`). Then the picture changes at
   most once per minute when the data does not change.
+
+**Risk: mixed scales.** In `spanned` mode, Mutter multiplies the image size
+by the monitor scale but does not multiply the monitor offset. With two
+monitors at different scales, a monitor can show the wrong part of the
+picture. The builder must test these layouts in GNOME Shell:
+
+1. One monitor, 1920×1080, scale 1.
+2. One monitor, 3840×2160, scale 2.
+3. One monitor rotated to portrait.
+4. Two monitors with different aspect ratios, both at scale 1.
+5. Two monitors at different scales (1 and 2).
+
+Pass criteria: each monitor shows one whole map, centered, not cut, not
+stretched. All text is inside the margins of section 6.1. If layout 5 fails,
+the builder uses the fallback: `picture-options` is `zoom`, and the picture
+has the size and aspect ratio of the primary monitor. The README then states
+the limit for mixed-scale setups.
 
 **Risk: picture reload.** GNOME reloads the picture after a
 `CHANGES_DONE_HINT` file event. An atomic rename (write to a temporary file,
@@ -252,9 +287,10 @@ empty frame appears between pictures. 100 updates in a row all pass.
 - After suspend, the timer starts the next run within 30 seconds of resume.
 
 **Failure picture.** The service has `OnFailure=` set to a second unit. That
-unit sets the wallpaper to a fixed picture with the text "НЕ ОНОВЛЮЄТЬСЯ"
-(not updating) and the time. The install script draws this picture once.
-The next successful run sets the live picture again.
+unit draws a plain picture with the text "НЕ ОНОВЛЮЄТЬСЯ" (not updating) and
+the time, and sets it as the wallpaper. It uses the current monitor layout,
+or the last layout from the state file. It does not use the network or the
+map drawing code. The next successful run sets the live picture again.
 
 ### 5.8 Install and uninstall
 
@@ -267,8 +303,7 @@ Install (one command, for example `./install.sh`):
 3. Copy the units to `~/.config/systemd/user/`.
 4. Save the current values of `picture-uri`, `picture-uri-dark`, and
    `picture-options`.
-5. Draw the failure picture.
-6. Enable and start the timer.
+5. Enable and start the timer.
 
 Uninstall (`./install.sh --uninstall` or `./uninstall.sh`):
 
@@ -338,7 +373,8 @@ These rules come from the Plasma project 0.2.2. Keep them all.
 
 - Synthetic data draws every threat symbol, advisory reports, region-only
   reports, a threat-feed failure, and stale alerts.
-- Draw each fixture at 1920×1080 and at 3840×2160 with scale 2.
+- Draw each fixture at 1920×1080, at 3840×2160 with scale 2, at 2560×1080
+  (21:9), and at 1080×1920 (portrait).
 - The fixtures are not part of the installed program.
 
 ### 7.3 GNOME integration test
@@ -350,6 +386,7 @@ the host system.
 - Images: Fedora 44 (GNOME 50) and Ubuntu 24.04 (GNOME 46).
 - Steps: install, wait for 3 runs, take a screenshot, check the picture
   reload (section 5.6), uninstall, check that the old wallpaper is back.
+- Run the monitor layouts of section 5.6 with headless virtual monitors.
 
 ### 7.4 Resource and leak checks
 
