@@ -37,4 +37,19 @@ test('override string', () => assertDeepEqual(parseDisplayOverride('3840x2160@2,
   {mode:'logical', monitors:[{x:0,y:0,width:1920,height:1080,scale:2,primary:true},{x:1920,y:0,width:1080,height:1920,scale:1,primary:false}]}));
 test('bad override string', () => assertThrows(() => parseDisplayOverride('nonsense')));
 
+function errorOf(fn) {
+  try {
+    fn();
+  } catch (e) {
+    return e.message;
+  }
+  return 'no error';
+}
+test('no monitors is an error', () =>
+  assertEqual(errorOf(() => pictureLayout({mode:'logical', monitors:[]})), 'No monitors'));
+test('empty monitor layout is an error', () => {
+  assertEqual(errorOf(() => pictureLayout(L([0,0,0,1080,1]))), 'Empty monitor layout');
+  assertEqual(errorOf(() => pictureLayout(L([0,0,1920,0,1]))), 'Empty monitor layout');
+});
+
 await run();

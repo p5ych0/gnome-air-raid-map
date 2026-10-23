@@ -6,11 +6,13 @@ export const PIXEL_CAP = 16600000;
 export function pictureLayout(display, cap = PIXEL_CAP) {
     const logical = display.mode === 'logical';
     const monitors = display.monitors;
+    if (!monitors.length) throw new Error('No monitors');
     const k = logical ? Math.max(...monitors.map(m => m.scale)) : 1;
     const left = Math.min(...monitors.map(m => m.x));
     const top = Math.min(...monitors.map(m => m.y));
     const right = Math.max(...monitors.map(m => m.x + m.width));
     const bottom = Math.max(...monitors.map(m => m.y + m.height));
+    if (!(right - left > 0 && bottom - top > 0)) throw new Error('Empty monitor layout');
     const area = (right - left) * k * (bottom - top) * k;
     const c = area > cap ? Math.sqrt(cap / area) : 1;
     // Each edge is rounded on its own, so neighbors share edges exactly.
