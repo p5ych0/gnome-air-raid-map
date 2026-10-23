@@ -124,6 +124,57 @@ test('alert fields that are not drawn and the entry order are not a change', () 
     assertTrue(unchangedKey(b, freshThreats, two, now + 60000) !== unchangedKey(c, freshThreats, two, now + 60000));
 });
 
+test('duplicate alert keys and yellow beside red are not a change', () => {
+    const two = twoRegionGeometry();
+    const clean = acceptAlerts(emptyFeed(), {oblasts: [{key: 'a'}, {key: 'b', level: 'yellow'}], raions: []}, two, now);
+    // parseSnapshot draws one entry per key, and red wins over yellow.
+    const noisy = acceptAlerts(clean, {oblasts: [{key: 'a', level: 'yellow'}, {key: 'a'}, {key: 'a', level: 'yellow'},
+        {key: 'b', level: 'yellow'}, {key: 'b', level: 'yellow'}], raions: []}, two, now + 30000);
+    assertEqual(noisy.digest, clean.digest);
+    assertEqual(noisy.lastChange, now);
+    assertEqual(unchangedKey(noisy, freshThreats, two, now + 30000), unchangedKey(clean, freshThreats, two, now + 30000));
+});
+
+const uavGroup = {id: 'one', type: 'uav', lat: 50, lon: 30, status: 'active', heading: 90, count: 2,
+    positionQuality: 'confirmed'};
+const kab = {id: 'two', type: 'kab', lat: 48, lon: 34, status: 'active'};
+const north = {id: 'north', type: 'missile', status: 'active', areaOnly: true, region: 'Північна область'};
+const south = {id: 'south', type: 'kab', status: 'active', areaOnly: true, region: 'Південна область', count: 3};
+const threatsAt = (feed, threats, at) => acceptThreats(feed, {threats}, at);
+
+test('threat ids, position quality and the point order are not a change', () => {
+    const a = threatsAt(emptyFeed(), [uavGroup, kab, north, south], now);
+    const key = feed => unchangedKey(fresh, feed, geometry, now + 30000);
+    for (const [name, threats] of Object.entries({
+        'point id': [{...uavGroup, id: 'renamed'}, kab, north, south],
+        'area id': [uavGroup, kab, {...north, id: 'renamed'}, south],
+        'position quality': [{...uavGroup, positionQuality: 'approx'}, kab, north, south],
+        'point order': [kab, north, uavGroup, south],
+    })) {
+        const b = threatsAt(a, threats, now + 30000);
+        assertEqual(b.digest, a.digest, `${name}: digest`);
+        assertEqual(b.lastChange, now, `${name}: change time`);
+        assertEqual(key(b), key(a), `${name}: render key`);
+    }
+});
+
+test('a drawn threat change is a change', () => {
+    const a = threatsAt(emptyFeed(), [uavGroup, kab, north, south], now);
+    const key = feed => unchangedKey(fresh, feed, geometry, now + 30000);
+    for (const [name, threats] of Object.entries({
+        'heading': [{...uavGroup, heading: 180}, kab, north, south],
+        'point count': [{...uavGroup, count: 5}, kab, north, south],
+        'area count': [uavGroup, kab, north, {...south, count: 4}],
+        // The region-only list shows the provider's order.
+        'area order': [uavGroup, kab, south, north],
+    })) {
+        const b = threatsAt(a, threats, now + 30000);
+        assertTrue(b.digest !== a.digest, `${name}: same digest`);
+        assertEqual(b.lastChange, now + 30000, `${name}: change time`);
+        assertTrue(key(b) !== key(a), `${name}: same render key`);
+    }
+});
+
 // Ported from the Plasma project: tests/tst_threatsource.qml.
 test('invalid snapshot preserves last valid threats', () => {
     const first = acceptThreats(emptyFeed(),

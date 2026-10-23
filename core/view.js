@@ -23,18 +23,31 @@ export function failFeed(feed, message) {
     return {...feed, error: message};
 }
 
-// The digests cover only what the picture draws. Undocumented provider fields
-// (version, seq, serverTime) and undrawn entry fields change on every poll
-// (spec 4.1). Alerts: the sorted [kind, key, level] entries.
-function alertsDigest(payload) {
+// The digests cover only what the picture draws (spec 4.1, 5.6). Undocumented
+// provider fields (version, seq, serverTime), undrawn entry fields and the entry
+// order change on every poll. The digests and the render key use the same
+// projections of the parse results.
+const byJson = items => items.map(item => [JSON.stringify(item), item])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(pair => pair[1]);
+const pick = (item, fields) => Object.fromEntries(fields.map(field => [field, item[field]]));
+
+// The parseSnapshot result, already deduplicated with red precedence, as sorted [kind, key, level] entries.
+export function drawnAlerts(parsed) {
     const entries = [];
-    for (const kind of ['raions', 'oblasts']) {
-        for (const entry of payload[kind]) {
-            const level = entry && entry.level !== undefined ? entry.level : 'red';
-            entries.push(JSON.stringify([kind, entry && entry.key, level]));
-        }
-    }
-    return sha256(JSON.stringify(entries.sort()));
+    for (const kind of ['raions', 'oblasts'])
+        for (const key of Object.keys(parsed[kind])) entries.push([kind, key, parsed[kind][key]]);
+    return byJson(entries);
+}
+
+// The parseThreats result without the fields that are not drawn (id, approximate). The
+// points are sorted: their order only decides which overlapping icon is on top. The areas
+// keep the provider's order, which the region-only list shows.
+export function drawnThreats(parsed) {
+    return {
+        points: byJson(parsed.points.map(p => pick(p, ['type', 'point', 'advisory', 'heading', 'count']))),
+        areas: parsed.areas.map(a => pick(a, ['region', 'label', 'count', 'advisory'])),
+        count: parsed.count,
+    };
 }
 
 // A response that does not pass validation is a failed request. It never
@@ -42,12 +55,13 @@ function alertsDigest(payload) {
 // be fully validated, so none is accepted: the last valid data stays and is stale.
 export function acceptAlerts(feed, payload, geometry, now) {
     if (!geometry) return failFeed(feed, 'Boundaries unavailable');
+    let alerts;
     try {
-        parseSnapshot(payload, geometry.oblasts, geometry.raions);
+        alerts = parseSnapshot(payload, geometry.oblasts, geometry.raions);
     } catch (e) {
         return failFeed(feed, e.message);
     }
-    return acceptFeed(feed, payload, alertsDigest(payload), now);
+    return acceptFeed(feed, payload, sha256(JSON.stringify(drawnAlerts(alerts))), now);
 }
 
 export function acceptThreats(feed, payload, now) {
@@ -57,7 +71,7 @@ export function acceptThreats(feed, payload, now) {
     } catch (e) {
         return failFeed(feed, e.message);
     }
-    return acceptFeed(feed, payload, sha256(JSON.stringify(threats)), now);
+    return acceptFeed(feed, payload, sha256(JSON.stringify(drawnThreats(threats))), now);
 }
 
 const clock = ms => GLib.DateTime.new_from_unix_local(Math.floor(ms / 1000)).format('%H:%M');
@@ -81,7 +95,7 @@ export function buildView(alertsFeed, threatsFeed, geometry, now, labelMode) {
         ? tryParse(() => sortedAlerts(parseSnapshot(alertsFeed.payload, geometry.oblasts, geometry.raions)))
         : {value: null, failed: false};
     const threatsParse = threatsFeed.payload
-        ? tryParse(() => parseThreats(threatsFeed.payload))
+        ? tryParse(() => drawnThreats(parseThreats(threatsFeed.payload)))
         : {value: null, failed: false};
     const alertsStale = alertsParse.failed ||
         isStale(alertsFeed.lastSuccess, now, alertsFeed.error !== '' || !geometry);
