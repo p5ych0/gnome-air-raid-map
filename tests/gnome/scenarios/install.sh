@@ -1,12 +1,13 @@
 # Scenario: install, the failure banner, and uninstall (plan Task 10). Sourced by session.sh.
 # The container has no systemd user manager. A stub systemctl first in PATH writes
 # "systemctl <arguments>" to $OUT/calls.log, and the scenario runs the ExecStart lines
-# of the installed units by hand, as systemd runs them for Type=oneshot. During the
-# uninstall, a stub gsettings also writes "gsettings <arguments>" to calls.log and
-# then runs the real gsettings. The updater gets its data from the local fixture
-# server (fixture.js), not from NEPTUN.
+# of the installed units by hand, as systemd runs them for Type=oneshot. In the
+# failure unit and during the uninstall, a stub gsettings also writes "gsettings
+# <arguments>" to calls.log and then runs the real gsettings. The updater gets its
+# data from the local fixture server (fixture.js), not from NEPTUN.
 # Steps: 1 set a known wallpaper; 2 install; 3 check the files and the systemctl
-# calls; 4 run the service (map-1.png); 5 run the failure unit (banner.png); 6 remove
+# calls; 4 run the service (map-1.png); 5 run the failure unit twice: the second
+# run must set no key (banner.png); 6 remove
 # the alert from the fixture data and run the service again (map-2.png): the screen
 # must show the new picture, not a cached copy of picture-1; 7 install again: the
 # saved wallpaper must not change; 8 uninstall (restored.png).
@@ -25,7 +26,7 @@ RUNDIR=$XDG_RUNTIME_DIR/$APP
 UNITS=("$APP.service" "$APP.timer" "$APP-failed.service")
 FIXTURE=$XDG_RUNTIME_DIR/install-fixture
 STUB=$XDG_RUNTIME_DIR/stub-bin
-# Only for the uninstall: install.sh writes the gsettings path into the units.
+# Not first in PATH: install.sh writes the gsettings path into the units.
 GSTUB=$XDG_RUNTIME_DIR/stub-gsettings
 GSETTINGS=$(command -v gsettings)
 KEYS=(picture-uri picture-uri-dark picture-options primary-color)
@@ -149,17 +150,27 @@ install_run() {
     return $code
 }
 
+# sets_are <key ...>: calls.log has a "gsettings set" call for exactly these keys,
+# in this order, and no other call except "gsettings get".
+sets_are() {
+    local keys
+    sed 's/^/#   /' "$OUT/calls.log"
+    keys=$(grep -v '^gsettings get ' "$OUT/calls.log" | sed "s/^gsettings set $SCHEMA \([^ ]*\) .*/\1/")
+    [ "$keys" = "$(printf '%s\n' "$@")" ]
+}
+
 # with_gsettings_stub <command ...>: runs the command with the stub gsettings first in PATH.
 with_gsettings_stub() {
     PATH="$GSTUB:$PATH" "$@"
 }
 
-# run_unit <unit> <name>: runs the ExecStart lines of an installed unit in order, as
-# systemd does for Type=oneshot, and stops at the first failure. In a unit file %%
-# is one %. timeout stops a line as TimeoutStartSec=25s does. The output goes to
-# <name>.stdout and <name>.stderr. eval splits the line at spaces and removes the
-# quotes, as systemd does; the lines come from the units that install.sh wrote from
-# systemd/*.in in this disposable container.
+# run_unit <unit> <name> [<gsettings>]: runs the ExecStart lines of an installed unit
+# in order, as systemd does for Type=oneshot, and stops at the first failure. In a
+# unit file %% is one %. timeout stops a line as TimeoutStartSec=25s does. The output
+# goes to <name>.stdout and <name>.stderr. eval splits the line at spaces and removes
+# the quotes, as systemd does; the lines come from the units that install.sh wrote
+# from systemd/*.in in this disposable container. With <gsettings>, the lines use
+# that program in place of the gsettings path in the unit.
 run_unit() {
     local line code=0
     : > "$OUT/$2.stdout"
@@ -167,6 +178,7 @@ run_unit() {
     while IFS= read -r line; do
         line=${line//%%/%}
         echo "#   ExecStart=$line"
+        [ -z "${3:-}" ] || line=${line//"$GSETTINGS"/"$3"}
         eval "timeout 25 $line" < /dev/null >> "$OUT/$2.stdout" 2>> "$OUT/$2.stderr" || {
             code=$?
             break
@@ -273,10 +285,18 @@ map_step 1
 check "step 4: map-1.png shows the red alert (#cf4655) in the square on each monitor" \
     indented gjs -m "$HERE/scenarios/square.js" "$OUT/map-1.png" "$OUT/layout-1.json" '#cf4655'
 
-# Step 5: the failure banner.
+# Step 5: the failure banner. The failure unit runs again every 30 s while the runs
+# fail, so its second run must set no key: dconf then writes nothing.
 from=$(shell_log_lines)
-check "step 5: the failure unit exits 0" run_unit "$APP-failed.service" failed
+: > "$OUT/calls.log"
+check "step 5: run 1 of the failure unit exits 0" run_unit "$APP-failed.service" failed-1 "$GSTUB/gsettings"
+check "step 5: run 1 of the failure unit sets the four keys" sets_are "${KEYS[@]}"
 check "step 5: the wallpaper keys point to the banner, centered, #0e1722" \
+    keys_are "'$BANNER_URI'" "'$BANNER_URI'" "'centered'" "'#0e1722'"
+: > "$OUT/calls.log"
+check "step 5: run 2 of the failure unit exits 0" run_unit "$APP-failed.service" failed-2 "$GSTUB/gsettings"
+check "step 5: run 2 of the failure unit sets no key" sets_are
+check "step 5: the wallpaper keys still point to the banner" \
     keys_are "'$BANNER_URI'" "'$BANNER_URI'" "'centered'" "'#0e1722'"
 take banner
 check "step 5: banner.png shows the banner centered on #0e1722 on each monitor" \
