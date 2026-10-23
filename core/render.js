@@ -8,7 +8,11 @@ import {marker} from './symbols.js';
 
 const BACKGROUND = '#0e1722';
 const MUTED = '#a8bdcf';
+// Text stays 64 px from each edge (spec 6.1), and 96 px from the left edge: the
+// Ubuntu Dock covers x < 66 there, and x < 82 at its largest icon size
+// (docs/decisions/2026-10-23-multi-monitor-mode.md).
 const MARGIN = 64;
+const MARGIN_LEFT = 96;
 const LIST_SPACING = 5;
 const LIST_GAP = 10;
 
@@ -127,8 +131,8 @@ function roundedRect(cr, x, y, w, h, r) {
 
 // The monitor rectangle inset by the margin. All text stays inside it (spec 6.1).
 function textArea(w, h) {
-    return {left: MARGIN, top: MARGIN, right: w - MARGIN, bottom: h - MARGIN,
-            width: w - 2 * MARGIN, height: h - 2 * MARGIN};
+    return {left: MARGIN_LEFT, top: MARGIN, right: w - MARGIN, bottom: h - MARGIN,
+            width: w - MARGIN_LEFT - MARGIN, height: h - 2 * MARGIN};
 }
 
 function drawMap(ctx, geometry, view, w, h) {
@@ -257,7 +261,8 @@ function drawText(cr, geometry, view, w, h) {
             : 'Завантаження мапи…', 22, 700);
         message.set_alignment(Pango.Alignment.CENTER);
         const [mw, mh] = message.get_pixel_size();
-        show(cr, message, area.left + (area.width - mw) / 2, area.top + (area.height - mh) / 2,
+        // Centered on the monitor, as the map is.
+        show(cr, message, (w - mw) / 2, area.top + (area.height - mh) / 2,
             '#f2c879', BACKGROUND);
     }
 
