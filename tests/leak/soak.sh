@@ -112,8 +112,10 @@ declare -A done_role=()
 # Each sampler stops its container after <seconds>. Wait for both, at most 10
 # minutes longer. A container that stops before its sampler wrote "sampler end"
 # is a failure.
+printed=0
 while [ ${#done_role[@]} -lt ${#ROLES[@]} ]; do
     sleep 30
+    printed=0
     for role in "${ROLES[@]}"; do
         [ -z "${done_role[$role]:-}" ] || continue
         if running "${container[$role]}"; then
@@ -143,8 +145,9 @@ while [ ${#done_role[@]} -lt ${#ROLES[@]} ]; do
     fi
     if [ "$(date +%s)" -ge "$next" ]; then
         checkpoint
+        printed=1
         next=$((next + CHECKPOINT))
     fi
 done
-checkpoint
+[ $printed -eq 1 ] || checkpoint
 log "done; evaluate with: gjs -m tests/leak/summarize.js --soak $(out_of updater) $(out_of control)"

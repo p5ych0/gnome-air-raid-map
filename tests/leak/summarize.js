@@ -23,7 +23,8 @@
 //   cause must be known (spec 7.4, check 4). REVIEW does not change the exit status.
 //   Pass for gnome-shell (spec 7.4, check 5): the PSS trend of the updater container
 //   minus the trend of the control, over the duration after the warm-up, is less
-//   than 1 % of the control PSS; and the added CPU time is less than 1 % of one core.
+//   than 1 % of the control PSS (also for the anonymous part of PSS alone); and the
+//   added CPU time is less than 1 % of one core.
 //
 // Exit status: 0 if every check passes, 1 if a check fails, 2 for a usage error.
 import GLib from 'gi://GLib';
@@ -240,6 +241,7 @@ function soak(updaterDir, controlDir) {
     const addedTrend = updater.pssSlope - control.pssSlope;
     const addedAnon = updater.anonSlope - control.anonSlope;
     const addedGrowth = addedTrend * hours(duration - warmup);
+    const addedAnonGrowth = addedAnon * hours(duration - warmup);
     const addedCpu = (updater.cpu / updater.seconds - control.cpu / control.seconds) * 100;
     const addedGroupCpu = (updater.groupCpu / updater.seconds - control.groupCpu / control.seconds) * 100;
     print(`  added by the updater: PSS trend ${fixed(addedTrend)} KB/h (anonymous part ${fixed(addedAnon)} KB/h); ` +
@@ -262,6 +264,9 @@ function soak(updaterDir, controlDir) {
     verdict(updater.restarts === 0 && control.restarts === 0 &&
         updater.alive === updater.samples && control.alive === control.samples, 'gnome-shell runs in both containers for the whole soak');
     verdict(addedGrowth < control.meanPss / 100, 'gnome-shell: no PSS trend that the control does not have (added growth less than 1 % of the control PSS)');
+    // PSS also changes when other processes map the same library files (the other
+    // container, the host). The anonymous part does not; it shows a leak more clearly.
+    verdict(addedAnonGrowth < control.meanPss / 100, 'gnome-shell: the same for the anonymous part of PSS');
     verdict(addedCpu < 1, 'gnome-shell: the updater adds less than 1 % of one core');
 }
 
