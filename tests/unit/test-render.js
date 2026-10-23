@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-import {test, run, assertEqual, assertTrue} from '../lib/assert.js';
+import {test, run, assertEqual, assertDeepEqual, assertTrue} from '../lib/assert.js';
 import {pixelAt, pixelReader, assertColorNear} from '../lib/pixels.js';
 import {syntheticGeometry, syntheticThreats, syntheticView} from '../lib/fixtures.js';
 import {project, parseSnapshot, parseThreats} from '../../core/mapdata.js';
 import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
-import {mapTransform, toScreen, visibleThreats, areaListLimit, areaItemText, renderPicture}
+import {mapTransform, toScreen, visibleThreats, areaListLimit, areaListPlan, areaItemText, renderPicture}
     from '../../core/render.js';
 
 const L1080 = pictureLayout(parseDisplayOverride('1920x1080@1'));
@@ -148,6 +148,38 @@ test('text stays inside the 64 px margins', () => {
             assertEqual(countIn(read, x0, y0, x1, y1, p => !blank(p)), 0, `${size}: ink in the margin ${[x0, y0, x1, y1]}`);
         assertTrue(countIn(read, m, m, m + 40 * scale, m + 30 * scale, p => !blank(p)) > 0, `${size}: no title`);
     }
+
+    // Many three-line items must stop above the legend block, not run into the margin.
+    const region = Array(40).fill('Довга назва').join(' ');
+    const areas = Array.from({length: 20}, () => ({region, label: 'МіГ-31К', count: 0, advisory: true}));
+    const listView = {...view, threats: {points: [], count: 20, areas}};
+    const emptyView = {...view, threats: {points: [], count: 0, areas: []}};
+    for (const size of ['1920x1080@1', '1366x768@1']) {
+        const layout = pictureLayout(parseDisplayOverride(size));
+        const {width: W, height: H} = layout;
+        const read = draw(listView, layout, null);
+        const blank = p => near(p, '#0e1722', 2);
+        for (const [x0, y0, x1, y1] of [[0, 0, W, 64], [0, H - 64, W, H], [0, 64, 64, H - 64], [W - 64, 64, W, H - 64]])
+            assertEqual(countIn(read, x0, y0, x1, y1, p => !blank(p)), 0, `${size} list: ink in the margin ${[x0, y0, x1, y1]}`);
+        // From above the legend block down, the picture must be the same as without a list.
+        const without = draw(emptyView, layout, null);
+        let diff = 0;
+        for (let y = H - 64 - 30; y < H; ++y)
+            for (let x = 0; x < W; ++x)
+                if (read(x, y).some((v, i) => v !== without(x, y)[i])) ++diff;
+        assertEqual(diff, 0, `${size}: list ink in the legend block`);
+    }
+});
+
+test('the overflow count includes items cut by the height bound', () => {
+    // 1366x768: the count limit is 8, but only 6 three-line items (69 px) fit in the
+    // 525 px above the legend block with the overflow line (17 px).
+    assertEqual(areaListLimit(768 - 128), 8);
+    assertDeepEqual(areaListPlan(Array(8).fill(69), 20, 525, 17), {shown: 6, more: 14});
+    assertDeepEqual(areaListPlan(Array(3).fill(20), 20, 1000, 17), {shown: 3, more: 17});
+    // Without hidden items, no overflow line is needed below the last item.
+    assertDeepEqual(areaListPlan([20, 20], 2, 45, 17), {shown: 2, more: 0});
+    assertDeepEqual(areaListPlan([69], 20, 30, 17), {shown: 0, more: 20});
 });
 
 test('area list limit on portrait', () => { // Review Focus 5

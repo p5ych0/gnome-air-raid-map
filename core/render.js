@@ -9,6 +9,8 @@ import {marker} from './symbols.js';
 const BACKGROUND = '#0e1722';
 const MUTED = '#a8bdcf';
 const MARGIN = 64;
+const LIST_SPACING = 5;
+const LIST_GAP = 10;
 
 // Rows of [text, color, underline] pieces. All text is plain; nothing is parsed as markup.
 const LEGEND = [['● ', '#cf4655'], ['Червоний рівень ', MUTED], ['● ', '#c69235'], ['Жовтий рівень ', MUTED],
@@ -41,6 +43,21 @@ export function visibleThreats(points, t, width, height) {
 
 export function areaListLimit(textAreaHeight) {
     return Math.max(1, Math.floor((textAreaHeight - 120) / 64));
+}
+
+// Splits the region-only items into shown and hidden. heights are the item heights, at most
+// areaListLimit of them. The shown items, and the overflow line if an item is hidden, must
+// fit in `available` pixels.
+export function areaListPlan(heights, total, available, overflowHeight) {
+    let used = 0, shown = 0;
+    while (shown < heights.length) {
+        const end = used + heights[shown];
+        const overflow = shown + 1 < total ? LIST_SPACING + overflowHeight : 0;
+        if (end + overflow > available) break;
+        used = end + LIST_SPACING;
+        ++shown;
+    }
+    return {shown, more: total - shown};
 }
 
 export function areaItemText(entry) {
@@ -175,21 +192,21 @@ function drawMap(ctx, geometry, view, w, h) {
     }
 }
 
-// Region-only reports: a header, rounded items, and an overflow count.
-function drawAreaList(cr, view, area, w) {
+// Region-only reports: a header, rounded items, and an overflow count. Items stop at
+// areaListLimit, or earlier where the next one would pass `bottom`.
+function drawAreaList(cr, view, area, w, bottom) {
     const areas = view.threats.areas;
-    const limit = areaListLimit(area.height);
     const width = Math.min(280, w * 0.24);
     const x = area.left;
     let y = area.top + 50;
 
     const header = plainLayout(cr, 'ЛИШЕ ОБЛАСТЬ · БЕЗ ТОЧНОЇ ПОЗИЦІЇ', 10);
     show(cr, header, x, y, MUTED);
-    y += header.get_pixel_size()[1] + 5;
+    y += header.get_pixel_size()[1] + LIST_SPACING;
 
     const size = Math.max(10, Math.min(14, w / 95));
     const lineHeight = plainLayout(cr, 'X', size).get_size()[1];
-    for (const entry of areas.slice(0, limit)) {
+    const labels = areas.slice(0, areaListLimit(area.height)).map(entry => {
         const label = plainLayout(cr, areaItemText(entry), size);
         label.set_width(Math.max(1, width - 12) * Pango.SCALE);
         label.set_wrap(Pango.WrapMode.WORD_CHAR);
@@ -197,16 +214,22 @@ function drawAreaList(cr, view, area, w) {
         // At most three lines in total, as maximumLineCount: 3 in QML. A negative
         // height would count lines per paragraph, and provider text can hold line breaks.
         label.set_height(Math.round(3.5 * lineHeight));
-        const height = label.get_pixel_size()[1] + 12;
-        roundedRect(cr, x, y, width, height, 5);
+        return label;
+    });
+    const heights = labels.map(label => label.get_pixel_size()[1] + 12);
+    const overflowHeight = plainLayout(cr, 'Ще повідомлень: 0', 12).get_pixel_size()[1];
+    const {shown, more} = areaListPlan(heights, areas.length, bottom - y, overflowHeight);
+
+    for (let i = 0; i < shown; ++i) {
+        roundedRect(cr, x, y, width, heights[i], 5);
         setColor(cr, '#de152331');
         cr.fill();
-        show(cr, label, x + 6, y + 6, entry.advisory ? '#9ad6f7' : '#eef4fa');
-        y += height + 5;
+        show(cr, labels[i], x + 6, y + 6, areas[i].advisory ? '#9ad6f7' : '#eef4fa');
+        y += heights[i] + LIST_SPACING;
     }
 
-    if (areas.length > limit)
-        show(cr, plainLayout(cr, 'Ще повідомлень: ' + (areas.length - limit), 12), x, y, MUTED);
+    if (more > 0 && y + overflowHeight <= bottom)
+        show(cr, plainLayout(cr, 'Ще повідомлень: ' + more, 12), x, y, MUTED);
 }
 
 function drawText(cr, geometry, view, w, h) {
@@ -233,16 +256,19 @@ function drawText(cr, geometry, view, w, h) {
             '#f2c879', BACKGROUND);
     }
 
-    if (!view.threatsStale && view.threats && view.threats.areas.length > 0)
-        drawAreaList(cr, view, area, w);
-
     const small = Math.max(10, Math.min(13, w / 100));
     const legend = rowLayout(cr, LEGEND, small);
-    showRow(cr, legend, area.left, area.bottom - legend.height);
-
-    // Two right-aligned lines: the data source above the official-alerts notice.
     const notice = rowLayout(cr, [[NOTICE, MUTED]], small);
     const source = rowLayout(cr, SOURCE, small);
+
+    // The list stops a small gap above the legend and attribution block.
+    if (!view.threatsStale && view.threats && view.threats.areas.length > 0) {
+        drawAreaList(cr, view, area, w,
+            area.bottom - Math.max(legend.height, notice.height + source.height) - LIST_GAP);
+    }
+
+    showRow(cr, legend, area.left, area.bottom - legend.height);
+    // Two right-aligned lines: the data source above the official-alerts notice.
     showRow(cr, notice, area.right - notice.width, area.bottom - notice.height);
     showRow(cr, source, area.right - source.width, area.bottom - notice.height - source.height);
 }
