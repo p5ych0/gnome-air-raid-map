@@ -70,7 +70,12 @@ install_app() {
         die "no systemd user session: systemctl --user does not answer"
     check_unit_value "$APPDIR"
 
-    # 1. The program.
+    # 1. The program. On an update, a run that starts while the old files are
+    # deleted fails and shows the banner. So stop the timer first; step 5 starts
+    # it again.
+    if systemctl --user is-active --quiet "$TIMER"; then
+        systemctl --user stop "$TIMER"
+    fi
     mkdir -p "$APPDIR"
     rm -rf "$APPDIR/core" "$APPDIR/updater"
     cp -R "$SOURCE/core" "$SOURCE/updater" "$APPDIR/"

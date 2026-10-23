@@ -1,16 +1,18 @@
 # Scenario: install, the failure banner, and uninstall (plan Task 10). Sourced by session.sh.
 # The container has no systemd user manager. A stub systemctl first in PATH writes
-# "systemctl <arguments>" to $OUT/calls.log, and the scenario runs the ExecStart lines
+# "systemctl <arguments>" to $OUT/calls.log; for is-active, a unit is active only if
+# the file $STUB/active/<unit> exists. The scenario runs the ExecStart lines
 # of the installed units by hand, as systemd runs them for Type=oneshot. In the
 # failure unit and during the uninstall, a stub gsettings also writes "gsettings
 # <arguments>" to calls.log and then runs the real gsettings. The updater gets its
 # data from the local fixture server (fixture.js), not from NEPTUN.
 # Steps: 1 set a known wallpaper; 2 install; 3 check the files and the systemctl
 # calls; 4 run the service (map-1.png); 5 run the failure unit twice: the second
-# run must set no key (banner.png); 6 remove
-# the alert from the fixture data and run the service again (map-2.png): the screen
-# must show the new picture, not a cached copy of picture-1; 7 install again: the
-# saved wallpaper must not change; 8 uninstall (restored.png).
+# run must set no key (banner.png); 6 remove the alert from the fixture data and run
+# the service again (map-2.png): the screen must show the new picture, not a cached
+# copy of picture-1; 7 install again while the timer runs: the saved wallpaper must
+# not change, and the timer stops before the files are copied; 8 uninstall
+# (restored.png).
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -230,9 +232,18 @@ for ((i = 0; i < 40; i++)); do
 done
 export AIR_RAID_MAP_API_BASE=http://127.0.0.1:$PORT
 
-mkdir -p "$STUB" "$GSTUB"
-printf '%s\n' '#!/bin/sh' '# The container has no systemd user manager: write the arguments to the log.' \
-    "echo \"systemctl \$*\" >> '$OUT/calls.log'" > "$STUB/systemctl"
+mkdir -p "$STUB/active" "$GSTUB"
+cat > "$STUB/systemctl" << STUB_END
+#!/bin/sh
+# The container has no systemd user manager: write the arguments to the log.
+# is-active: a unit is active only if the file $STUB/active/<unit> exists.
+echo "systemctl \$*" >> '$OUT/calls.log'
+if [ "\$2" = is-active ]; then
+    for unit; do :; done
+    [ -e '$STUB/active/'"\$unit" ] || exit 3
+fi
+exit 0
+STUB_END
 printf '%s\n' '#!/bin/sh' '# Write the arguments to the log, then run the real gsettings.' \
     "echo \"gsettings \$*\" >> '$OUT/calls.log'" "exec '$GSETTINGS' \"\$@\"" > "$GSTUB/gsettings"
 chmod +x "$STUB/systemctl" "$GSTUB/gsettings"
@@ -278,7 +289,8 @@ check "step 3: the banner is a 1200x360 PNG" png_size "$APPDIR/banner.png" 1200 
 check "step 3: the saved wallpaper has the known values" saved_known
 cp "$STATEDIR/previous-wallpaper" "$OUT/previous-wallpaper"
 check "step 3: systemctl got daemon-reload, then enable --now $APP.timer" calls_are \
-    'systemctl --user show-environment' 'systemctl --user daemon-reload' "systemctl --user enable --now $APP.timer"
+    'systemctl --user show-environment' "systemctl --user is-active --quiet $APP.timer" \
+    'systemctl --user daemon-reload' "systemctl --user enable --now $APP.timer"
 
 # Step 4: the live map. The fixture data has a red alert on the synthetic square.
 map_step 1
@@ -312,9 +324,16 @@ check "step 6: picture-2.png differs from picture-1.png" different_files "$OUT/p
 check "step 6: map-2.png shows the square without an alert (#223448) on each monitor" \
     indented gjs -m "$HERE/scenarios/square.js" "$OUT/map-2.png" "$OUT/layout-2.json" '#223448'
 
-# Step 7: a second install keeps the wallpaper from before the first install.
+# Step 7: a second install keeps the wallpaper from before the first install. The
+# timer runs now: a run while the files are copied would fail, so the install stops
+# the timer before the copy and starts it again at the end.
+touch "$STUB/active/$APP.timer"
+: > "$OUT/calls.log"
 check "step 7: a second install.sh exits 0" install_run install-2
 check "step 7: the saved wallpaper did not change" same_file "$OUT/previous-wallpaper" "$STATEDIR/previous-wallpaper"
+check "step 7: systemctl got stop $APP.timer before daemon-reload, then enable --now" calls_are \
+    'systemctl --user show-environment' "systemctl --user is-active --quiet $APP.timer" \
+    "systemctl --user stop $APP.timer" 'systemctl --user daemon-reload' "systemctl --user enable --now $APP.timer"
 
 # Step 8: uninstall.
 : > "$OUT/calls.log"
