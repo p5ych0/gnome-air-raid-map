@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: MIT
+import {test, run, assertEqual, assertTrue} from '../lib/assert.js';
+import {pixelAt, pixelReader, assertColorNear} from '../lib/pixels.js';
+import {syntheticGeometry, syntheticThreats, syntheticView} from '../lib/fixtures.js';
+import {project, parseSnapshot, parseThreats} from '../../core/mapdata.js';
+import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
+import {mapTransform, toScreen, visibleThreats, areaListLimit, areaItemText, renderPicture}
+    from '../../core/render.js';
+
+const L1080 = pictureLayout(parseDisplayOverride('1920x1080@1'));
+const bounds = syntheticGeometry().oblasts.bounds;
+const t = mapTransform(bounds, 1920, 1080);
+const INSIDE = project([24, 45]);
+
+function redAlert() {
+    const g = syntheticGeometry();
+    return parseSnapshot({oblasts: [{key: 'test'}], raions: []}, g.oblasts, g.raions);
+}
+
+// Draws with the default synthetic data; returns a pixel reader and frees the surface.
+function draw(overrides = {}, layout = L1080, geometry = syntheticGeometry()) {
+    const surface = renderPicture(layout, geometry, syntheticView(overrides));
+    const read = pixelReader(surface);
+    surface.finish();
+    return read;
+}
+
+function screen(transform, point, rect = {x: 0, y: 0, scale: 1}) {
+    const [x, y] = toScreen(transform, point);
+    return [Math.round(rect.x + x * rect.scale), Math.round(rect.y + y * rect.scale)];
+}
+
+const bright = ([r, g, b]) => r + g + b > 450;
+const near = (pixel, hex, tolerance) => {
+    try { assertColorNear(pixel, hex, tolerance); return true; } catch (e) { return false; }
+};
+
+function countIn(read, x0, y0, x1, y1, predicate) {
+    let n = 0;
+    for (let y = y0; y < y1; ++y)
+        for (let x = x0; x < x1; ++x)
+            if (predicate(read(x, y))) ++n;
+    return n;
+}
+
+test('background outside the map', () => {
+    const surface = renderPicture(L1080, syntheticGeometry(), syntheticView());
+    assertColorNear(pixelAt(surface, 5, 5), '#0e1722');
+    surface.finish();
+});
+
+test('red alert fills the oblast', () => {
+    const [x, y] = screen(t, INSIDE);
+    assertColorNear(draw({alerts: redAlert()})(x, y), '#cf4655');
+});
+
+test('stale alerts are dimmed', () => {
+    const [x, y] = screen(t, INSIDE);
+    // 0.4 * #cf4655 over #223448 = (103, 59, 77).
+    assertColorNear(draw({alerts: redAlert(), alertsStale: true})(x, y), '#673b4d');
+});
+
+test('fresh threats are drawn', () => {
+    const read = draw();
+    for (const threat of parseThreats({threats: syntheticThreats()}).points) {
+        const [x, y] = screen(t, threat.point);
+        assertTrue(countIn(read, x - 10, y - 10, x + 10, y + 10, bright) > 0, `no marker for ${threat.id}`);
+    }
+});
+
+test('stale threats are hidden', () => {
+    const read = draw({threatsStale: true});
+    for (const threat of parseThreats({threats: syntheticThreats()}).points) {
+        const [x, y] = screen(t, threat.point);
+        assertEqual(countIn(read, x - 10, y - 10, x + 10, y + 10, bright), 0, `marker for ${threat.id}`);
+    }
+});
+
+test('off-map threats are dropped', () => {
+    assertEqual(visibleThreats([{point: project([60, 50])}], t, 1920, 1080).length, 0);
+    assertEqual(visibleThreats([{point: project([31, 48])}], t, 1920, 1080).length, 1);
+});
+
+test('portrait keeps the whole map inside the monitor', () => {
+    const p = mapTransform(bounds, 1080, 1920);
+    for (const [x, y] of [toScreen(p, [bounds[0], bounds[1]]), toScreen(p, [bounds[2], bounds[3]])]) {
+        assertTrue(x >= 0 && x <= 1080, `x ${x} is outside the monitor`);
+        assertTrue(y >= 0 && y <= 1920, `y ${y} is outside the monitor`);
+    }
+});
+
+test('each monitor gets its own map', () => {
+    const layout = pictureLayout(parseDisplayOverride('1920x1080@1,1080x1920@1'));
+    const read = draw({alerts: redAlert()}, layout);
+    for (const rect of layout.monitors) {
+        const own = mapTransform(bounds, rect.width / rect.scale, rect.height / rect.scale);
+        const [x, y] = screen(own, INSIDE, rect);
+        assertColorNear(read(x, y), '#cf4655');
+    }
+});
+
+test('scale 2 draws the logical layout at twice the size', () => {
+    const layout = pictureLayout(parseDisplayOverride('3840x2160@2'));
+    const read = draw({alerts: redAlert()}, layout);
+    assertColorNear(read(...screen(t, INSIDE, layout.monitors[0])), '#cf4655');
+    assertColorNear(read(...screen(t, project([20, 45]), layout.monitors[0])), '#0e1722');
+});
+
+test('area item text', () => {
+    assertEqual(areaItemText({region: 'Тестова область', label: 'Ракета', count: 0, advisory: false}),
+        'Тестова область · Ракета');
+    assertEqual(areaItemText({region: 'Інша область', label: 'МіГ-31К', count: 2, advisory: true}),
+        'Інша область · МіГ-31К ×2\nСпостереження');
+});
+
+test('markup characters render literally', () => { // Review Focus 4
+    assertEqual(areaItemText({region: 'A & <b>B', label: 'Ракета', count: 0, advisory: false}), 'A & <b>B · Ракета');
+    const area = region => ({threats: {points: [], count: 1,
+        areas: [{region, label: 'Ракета', count: 0, advisory: false}]}});
+    // Markup parsing would fail on the first name and draw no item text at all.
+    const list = read => countIn(read, 64, 114, 300, 260, bright);
+    assertTrue(list(draw(area('A & <b>B'))) > list(draw(area('A'))), 'the markup characters are not drawn');
+});
+
+test('long region names stop at three lines', () => {
+    const long = Array(40).fill('Довга назва').join(' ');
+    // Provider text can hold line breaks, and advisory items add one more line.
+    for (const [region, advisory] of [[long, false], [long, true], ['А\nБ\nВ\nГ\nД\nЕ', false]]) {
+        const read = draw({threats: {points: [], count: 1, areas: [{region, label: 'Ракета', count: 0, advisory}]}},
+            L1080, null);
+        // The item starts near y 133; three 14 px lines and the padding end it near y 205.
+        assertTrue(countIn(read, 64, 140, 344, 200, p => !near(p, '#0e1722', 40)) > 0, 'no item text');
+        assertEqual(countIn(read, 64, 210, 344, 400, p => !near(p, '#0e1722', 2)), 0,
+            `text below the third line: ${JSON.stringify(region.slice(0, 12))}, advisory ${advisory}`);
+    }
+});
+
+test('text stays inside the 64 px margins', () => {
+    const view = {statusLines: ['ДАНІ ЗАСТАРІЛИ', 'Загрози: оновлено 14:05 · 10 повідомл.'], alertsStale: true};
+    for (const size of ['1920x1080@1', '3840x2160@2', '2560x1080@1', '1080x1920@1']) {
+        const layout = pictureLayout(parseDisplayOverride(size));
+        const {width: W, height: H, monitors: [{scale}]} = layout;
+        const m = 64 * scale;
+        // Without boundaries only text is drawn, so the margins must stay empty.
+        const read = draw(view, layout, null);
+        const blank = p => near(p, '#0e1722', 2);
+        for (const [x0, y0, x1, y1] of [[0, 0, W, m], [0, H - m, W, H], [0, m, m, H - m], [W - m, m, W, H - m]])
+            assertEqual(countIn(read, x0, y0, x1, y1, p => !blank(p)), 0, `${size}: ink in the margin ${[x0, y0, x1, y1]}`);
+        assertTrue(countIn(read, m, m, m + 40 * scale, m + 30 * scale, p => !blank(p)) > 0, `${size}: no title`);
+    }
+});
+
+test('area list limit on portrait', () => { // Review Focus 5
+    assertEqual(areaListLimit(1920 - 128), 26);
+    assertEqual(areaListLimit(150), 1);
+});
+
+test('missing boundaries show the loading message', () => {
+    const read = draw({}, L1080, null);
+    assertColorNear(read(5, 5), '#0e1722');
+    const [x0, y0] = screen(t, [bounds[0], bounds[1]]);
+    const [x1, y1] = screen(t, [bounds[2], bounds[3]]);
+    for (let y = y0; y <= y1; y += 10)
+        for (let x = x0; x <= x1; x += 10)
+            assertTrue(!near(read(x, y), '#cf4655', 30), `red at ${x},${y}`);
+    // The centered message is drawn in #f2c879.
+    assertTrue(countIn(read, 760, 520, 1160, 560, p => near(p, '#f2c879', 20)) > 0, 'no loading message');
+});
+
+await run();

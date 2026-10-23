@@ -15,7 +15,8 @@ export function parseColor(css) {
 
 const FAMILIES = {'sans-serif': 'Sans', 'serif': 'Serif', 'monospace': 'Monospace'};
 
-function parseFont(font) {
+// "<weight> <size>px <family>" -> Pango.FontDescription with an absolute size.
+export function parseFont(font) {
     const m = /^(?:(\d+)\s+)?(\d+(?:\.\d+)?)px\s+(.+)$/.exec(font.trim());
     if (!m) throw new Error(`unsupported font: ${font}`);
     const desc = new Pango.FontDescription();
@@ -130,17 +131,23 @@ export class Canvas2D {
         let left = x;
         if (this.textAlign === 'center') left -= width / 2;
         else if (this.textAlign === 'right') left -= width;
+        const ascent = layout.get_baseline() / Pango.SCALE;
         let top = y;
-        if (this.textBaseline === 'middle') top -= height / 2;
-        else if (this.textBaseline === 'alphabetic') top -= layout.get_baseline() / Pango.SCALE;
+        // As Qt Quick Canvas does: the baseline is at y + ascent / 2 - descent.
+        if (this.textBaseline === 'middle') top -= ascent / 2 + (height - ascent);
+        else if (this.textBaseline === 'alphabetic') top -= ascent;
         this._cr.moveTo(left, top);
     }
 
+    // Fills the glyph outlines, as Qt Quick Canvas does. The antialiasing is then
+    // grayscale, even when fontconfig asks for subpixel rendering.
     fillText(text, x, y) {
         const layout = this._layout(text);
         this._source(this.fillStyle);
+        this._cr.newPath();
         this._placeText(layout, x, y);
-        PangoCairo.show_layout(this._cr, layout);
+        PangoCairo.layout_path(this._cr, layout);
+        this._cr.fill();
     }
 
     strokeText(text, x, y) {

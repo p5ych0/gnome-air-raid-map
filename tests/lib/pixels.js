@@ -5,19 +5,27 @@ import Gio from 'gi://Gio';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import {parseColor} from '../../core/canvas.js';
 
-export function pixelAt(surface, x, y) {
+// Reads the surface once and returns (x, y) -> [r, g, b]. Use it to sample many pixels.
+export function pixelReader(surface) {
     const dir = GLib.dir_make_tmp('airmap-px-XXXXXX');
     const path = `${dir}/surface.png`;
     try {
         surface.writeToPNG(path);
         const pixbuf = GdkPixbuf.Pixbuf.new_from_file(path);
         const pixels = pixbuf.get_pixels();
-        const i = y * pixbuf.get_rowstride() + x * pixbuf.get_n_channels();
-        return [pixels[i], pixels[i + 1], pixels[i + 2]];
+        const stride = pixbuf.get_rowstride(), channels = pixbuf.get_n_channels();
+        return (x, y) => {
+            const i = y * stride + x * channels;
+            return [pixels[i], pixels[i + 1], pixels[i + 2]];
+        };
     } finally {
         try { Gio.File.new_for_path(path).delete(null); } catch (e) { /* already gone */ }
         try { Gio.File.new_for_path(dir).delete(null); } catch (e) { /* already gone */ }
     }
+}
+
+export function pixelAt(surface, x, y) {
+    return pixelReader(surface)(x, y);
 }
 
 export function assertColorNear(actual, hex, tolerance = 3) {

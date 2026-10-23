@@ -2,7 +2,7 @@
 import Cairo from 'cairo';
 import {test, run, assertDeepEqual, assertTrue} from '../lib/assert.js';
 import {parseColor, Canvas2D} from '../../core/canvas.js';
-import {pixelAt, assertColorNear} from '../lib/pixels.js';
+import {pixelAt, pixelReader, assertColorNear} from '../lib/pixels.js';
 
 function setup(w, h, background = '#000000') {
     const surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, w, h);
@@ -53,6 +53,42 @@ test('center aligned text is centered', () => {
         if (pixelAt(surface, x, 20)[0] > 200) bright.push(x);
     assertTrue(bright.some(x => x >= 92 && x <= 108), 'no white pixel near the center');
     assertTrue(bright.every(x => x >= 80 && x <= 120), 'text is not centered');
+    cr.$dispose();
+});
+
+// Qt Quick Canvas puts the baseline at y + ascent / 2 - descent; for Noto Sans 17 px, y + 4.
+test('middle baseline matches Qt Quick Canvas', () => {
+    const {surface, cr, ctx} = setup(60, 60);
+    ctx.font = '600 17px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('Н', 30, 30);
+    const read = pixelReader(surface);
+    let last = -1;
+    for (let y = 0; y < 60; ++y)
+        for (let x = 0; x < 60; ++x)
+            if (read(x, y)[0] > 128) last = y;
+    assertTrue(last >= 32 && last <= 34, `last ink row ${last}, expected 33`);
+    cr.$dispose();
+});
+
+// A wallpaper picture can be scaled, and monitors differ in subpixel order.
+test('text antialiasing is grayscale', () => {
+    const {surface, cr, ctx} = setup(80, 30);
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'top';
+    ctx.fillText('Лwi', 4, 4);
+    const read = pixelReader(surface);
+    let ink = 0;
+    for (let y = 0; y < 30; ++y)
+        for (let x = 0; x < 80; ++x) {
+            const [r, g, b] = read(x, y);
+            if (r) ++ink;
+            assertTrue(Math.abs(r - g) <= 1 && Math.abs(g - b) <= 1, `color fringe at ${x},${y}: ${[r, g, b]}`);
+        }
+    assertTrue(ink > 0, 'no text drawn');
     cr.$dispose();
 });
 
