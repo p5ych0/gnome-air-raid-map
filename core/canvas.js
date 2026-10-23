@@ -139,6 +139,15 @@ export class Canvas2D {
         this._cr.moveTo(left, top);
     }
 
+    // The logical extents of the text in the current font, in pixels, which place the
+    // text, and the ink rectangle relative to their top-left corner. The ink of hinted
+    // text can pass the logical extents by a pixel. Draws nothing.
+    measureText(text) {
+        const [ink, logical] = this._layout(text).get_pixel_extents();
+        return {width: logical.width, height: logical.height, ink: {left: ink.x, top: ink.y,
+            right: ink.x + ink.width, bottom: ink.y + ink.height}};
+    }
+
     // Fills the glyph outlines, as Qt Quick Canvas does. The antialiasing is then
     // grayscale, even when fontconfig asks for subpixel rendering.
     fillText(text, x, y) {

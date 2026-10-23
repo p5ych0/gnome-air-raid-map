@@ -49,7 +49,10 @@ export function draw(ctx, type, size, color) {
     ctx.restore();
 }
 
-export function marker(ctx, threat, x, y, size) {
+// bounds ({left, top, right, bottom}, in the coordinates of x and y) is optional. With
+// bounds, the group count moves sideways to stay inside them, and goes above the icon
+// if it would pass the bottom. The icon never moves.
+export function marker(ctx, threat, x, y, size, bounds = null) {
     const color = threat.advisory ? "#9ad6f7" : "#ffffff";
     ctx.save();
     ctx.translate(x,y);
@@ -60,11 +63,20 @@ export function marker(ctx, threat, x, y, size) {
     draw(ctx, threat.type, size, color);
     ctx.restore();
     if (threat.count > 1) {
+        const text = "×" + threat.count;
         ctx.fillStyle = color;
         ctx.font = "600 " + Math.max(8, size * 0.6) + "px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText("×" + threat.count, 0, size / 2 + 2);
+        let cx = 0, top = size / 2 + 2;
+        if (bounds) {
+            // The label covers its logical extents and its ink; x offsets are from its center.
+            const {width, height, ink} = ctx.measureText(text);
+            const left = Math.min(0, ink.left) - width / 2, right = Math.max(width, ink.right) - width / 2;
+            cx = Math.max(bounds.left - x - left, Math.min(bounds.right - x - right, cx));
+            if (y + top + Math.max(height, ink.bottom) > bounds.bottom) top = -size / 2 - 2 - height;
+        }
+        ctx.fillText(text, cx, top);
     }
     ctx.restore();
 }

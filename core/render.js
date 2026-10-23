@@ -125,6 +125,12 @@ function roundedRect(cr, x, y, w, h, r) {
     cr.closePath();
 }
 
+// The monitor rectangle inset by the margin. All text stays inside it (spec 6.1).
+function textArea(w, h) {
+    return {left: MARGIN, top: MARGIN, right: w - MARGIN, bottom: h - MARGIN,
+            width: w - 2 * MARGIN, height: h - 2 * MARGIN};
+}
+
 function drawMap(ctx, geometry, view, w, h) {
     const oblasts = geometry.oblasts, raions = geometry.raions;
     const t = mapTransform(oblasts.bounds, w, h);
@@ -187,7 +193,7 @@ function drawMap(ctx, geometry, view, w, h) {
         const size = Math.max(12, Math.min(16, w / 90));
         for (const threat of visibleThreats(view.threats.points, t, w, h)) {
             const [x, y] = toScreen(t, threat.point);
-            marker(ctx, threat, x, y, size);
+            marker(ctx, threat, x, y, size, textArea(w, h));
         }
     }
 }
@@ -233,8 +239,7 @@ function drawAreaList(cr, view, area, w, bottom) {
 }
 
 function drawText(cr, geometry, view, w, h) {
-    const area = {left: MARGIN, top: MARGIN, right: w - MARGIN, bottom: h - MARGIN,
-                  width: w - 2 * MARGIN, height: h - 2 * MARGIN};
+    const area = textArea(w, h);
 
     const title = plainLayout(cr, 'ПОВІТРЯНІ ТРИВОГИ', Math.max(16, Math.min(26, w / 50)), 600);
     const spacing = new Pango.AttrList();

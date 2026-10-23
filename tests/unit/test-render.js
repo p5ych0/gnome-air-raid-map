@@ -171,6 +171,27 @@ test('text stays inside the 64 px margins', () => {
     }
 });
 
+test('a group count at the map edge stays inside the 64 px margin', () => {
+    // On a 1080x1920 monitor the western map edge is at x 59.4, inside the margin.
+    const layout = pictureLayout(parseDisplayOverride('1080x1920@1'));
+    const edge = project([bounds[0], 48]);
+    const [ex, ey] = screen(mapTransform(bounds, 1080, 1920), edge);
+    assertTrue(ex > 50 && ex < 64, `the edge is at x ${ex}`);
+    const group = count => draw({threats: {points: [{type: 'uav', point: edge, advisory: false, heading: null, count}],
+        areas: [], count: 1}}, layout);
+    // Only the label differs between a group of 12 and a single threat.
+    const label = group(12), single = group(1);
+    const differ = (x0, x1) => {
+        let n = 0;
+        for (let y = ey - 40; y < ey + 40; ++y)
+            for (let x = x0; x < x1; ++x)
+                if (label(x, y).some((v, i) => v !== single(x, y)[i])) ++n;
+        return n;
+    };
+    assertTrue(differ(0, 200) > 0, 'no group label');
+    assertEqual(differ(0, 64), 0, 'label ink in the left margin');
+});
+
 test('the overflow count includes items cut by the height bound', () => {
     // 1366x768: the count limit is 8, but only 6 three-line items (69 px) fit in the
     // 525 px above the legend block with the overflow line (17 px).
