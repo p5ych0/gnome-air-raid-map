@@ -10,7 +10,7 @@ import GLib from 'gi://GLib';
 export const RELOAD_METHODS = ['in-place', 'rename', 'alternate'];
 
 // Chosen in docs/decisions/2026-10-23-picture-reload-method.md.
-export const DEFAULT_RELOAD_METHOD = 'in-place';
+export const DEFAULT_RELOAD_METHOD = 'rename';
 
 const PICTURE = 'picture.png';
 const TEMPORARY = 'picture.png.tmp';

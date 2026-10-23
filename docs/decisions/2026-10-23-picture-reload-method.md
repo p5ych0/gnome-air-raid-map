@@ -4,21 +4,30 @@ Date: 2026-10-23. Plan Task 7. Spec section 5.6, "Risk: picture reload".
 
 ## Decision
 
-The updater writes the picture **in place** (method `in-place`): it writes
-over `picture.png` in `$XDG_RUNTIME_DIR/gnome-air-raid-map/` and sets the
-wallpaper settings only when they do not point to the picture.
-`updater/writer.js` exports `DEFAULT_RELOAD_METHOD = 'in-place'`.
+The updater writes the picture with **rename** (method `rename`): it writes
+`picture.png.tmp` in `$XDG_RUNTIME_DIR/gnome-air-raid-map/`, renames it over
+`picture.png`, and sets the wallpaper settings only when they do not point
+to the picture. `updater/writer.js` exports
+`DEFAULT_RELOAD_METHOD = 'rename'`.
 
-Reason: the plan uses the first method, in the order `in-place`, `rename`,
-`alternate`, that passes 100 of 100 updates on both images. `in-place` is the
-first one. It also changes no settings during updates, so dconf writes
-nothing to the disk.
+Reason:
 
-Open point for the owner: `rename` also passed 100 of 100 on both images.
-It also showed each new picture at the first sample, and dconf wrote
-nothing. Unlike `in-place`, it never shows an
-incomplete picture after a write that stops halfway (see "Incomplete
-write"). To change the method, set `DEFAULT_RELOAD_METHOD` to `'rename'`.
+- `in-place` and `rename` both passed 100 of 100 updates on both images.
+  Both showed each new picture at the first sample (250 ms), and dconf
+  wrote nothing during updates with either method (see "Results").
+- A write that stops halfway shows an incomplete picture with `in-place`:
+  GNOME 50 shows no picture (only the default background color), and
+  GNOME 46 shows half a picture (see "Incomplete write"). A run can stop
+  during a write in normal use: the service has `MemoryMax=300M` and
+  `TimeoutStartSec=25s`.
+- Spec 5.6 requires: "No black or empty frame appears between pictures."
+  `in-place` can show such a frame. `rename` cannot: an incomplete file is
+  only the temporary file, and the Shell continues to show the last
+  complete picture.
+- The plan said to use the first method that passes, in the order
+  `in-place`, `rename`, `alternate`. That order would choose `in-place`.
+  The controller ruled that the spec criterion has priority over the order
+  of the plan, so `rename` is the chosen method.
 
 ## Results
 
@@ -167,3 +176,5 @@ cases the wallpaper stays wrong until the next good write: the next run, 30
 seconds later, if its write succeeds. With method `rename`, an incomplete
 file is only the temporary file, and the Shell continues to show the last
 complete picture.
+
+This result decided the method (see "Decision").
