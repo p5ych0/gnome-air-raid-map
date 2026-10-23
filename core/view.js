@@ -38,14 +38,12 @@ function alertsDigest(payload) {
 }
 
 // A response that does not pass validation is a failed request. It never
-// replaces the last valid data (spec 6.2). Without boundaries only the shape
-// can be checked; buildView checks the keys when the boundaries are back.
+// replaces the last valid data (spec 6.2). Without boundaries no response can
+// be fully validated, so none is accepted: the last valid data stays and is stale.
 export function acceptAlerts(feed, payload, geometry, now) {
+    if (!geometry) return failFeed(feed, 'Boundaries unavailable');
     try {
-        if (geometry)
-            parseSnapshot(payload, geometry.oblasts, geometry.raions);
-        else if (!payload || !Array.isArray(payload.raions) || !Array.isArray(payload.oblasts))
-            throw new Error('Invalid alert response');
+        parseSnapshot(payload, geometry.oblasts, geometry.raions);
     } catch (e) {
         return failFeed(feed, e.message);
     }

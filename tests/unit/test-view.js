@@ -165,18 +165,28 @@ test('alerts with a key outside the boundaries keep the last valid alerts', () =
     assertTrue(v.alertsStale);
     assertEqual(v.alerts.oblasts['@test'], 'red');
 });
-test('without boundaries alerts are checked only for shape', () => {
-    const accepted = acceptAlerts(emptyFeed(), {oblasts: [{key: 'gone'}], raions: []}, null, now);
-    assertEqual(accepted.error, '');
-    assertEqual(accepted.lastSuccess, now);
-    const rejected = acceptAlerts(accepted, {oblasts: null, raions: []}, null, now + 1000);
-    assertEqual(rejected.error, 'Invalid alert response');
-    assertEqual(rejected.payload, accepted.payload);
-    assertEqual(rejected.lastSuccess, now);
-    // When the boundaries come back, buildView rejects the unknown key.
-    const v = view(accepted);
-    assertEqual(v.alerts, null);
+// Without boundaries no alert response can be fully validated, so none is accepted.
+const keepsLastValid = (feed, payload) => {
+    const rejected = acceptAlerts(feed, payload, null, now + 1000);
+    assertEqual(rejected.error, 'Boundaries unavailable');
+    assertEqual(rejected.payload, feed.payload);
+    assertEqual(rejected.lastSuccess, feed.lastSuccess);
+    assertEqual(rejected.lastChange, feed.lastChange);
+    return rejected;
+};
+test('without boundaries a malformed alert response keeps the last valid alerts', () => {
+    const rejected = keepsLastValid(fresh, {oblasts: [{key: 'test', level: 'blue'}], raions: []});
+    const v = view(rejected, freshThreats, 'updated', now + 1000);
     assertTrue(v.alertsStale);
+    assertEqual(v.alerts.oblasts['@test'], 'red');
+});
+test('without boundaries a well-formed alert response is not accepted', () =>
+    keepsLastValid(fresh, {oblasts: [{key: 'test', level: 'yellow'}], raions: []}));
+test('without boundaries on the first run alerts are waiting', () => {
+    const rejected = keepsLastValid(emptyFeed(), alertPayload);
+    assertEqual(rejected.payload, null);
+    assertEqual(rejected.lastSuccess, 0);
+    assertEqual(buildView(rejected, freshThreats, null, now + 1000, 'updated').statusLines[0], 'ОЧІКУВАННЯ ДАНИХ');
 });
 
 await run();
