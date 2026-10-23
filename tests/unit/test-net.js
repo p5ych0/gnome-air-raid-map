@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertDeepEqual, assertTrue} from '../lib/assert.js';
 import {startServer} from '../lib/fixture-server.js';
 import {createSession, getJson, apiBase, RequestError} from '../../updater/net.js';
@@ -44,6 +45,16 @@ test('slow server times out', async () => {
     const server = startServer({'/slow': {body: '{}', delayMs: 2000}});
     const session = createSession({timeout: 1});
     await assertRequestError(getJson(session, server.base + '/slow'), /^Network timeout$/);
+    server.stop();
+});
+
+test('a slow body stops at the total deadline', async () => {
+    const server = startServer({'/drip': {body: '{"a":1}', dripMs: 700}});
+    const session = createSession({timeout: 5});
+    const start = GLib.get_monotonic_time();
+    await assertRequestError(getJson(session, server.base + '/drip', {deadlineMs: 1000}), /^Network timeout$/);
+    const ms = (GLib.get_monotonic_time() - start) / 1000;
+    assertTrue(ms >= 1000 && ms < 2000, `rejected after ${ms} ms`);
     server.stop();
 });
 

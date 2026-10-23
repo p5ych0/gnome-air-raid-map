@@ -27,17 +27,28 @@ export class RequestError extends Error {
     }
 }
 
-export async function getJson(session, url, {etag = null} = {}) {
+// The session timeout is an idle timeout: a server that sends a byte now and
+// then never hits it. deadlineMs limits the whole request (spec 5.4).
+export async function getJson(session, url, {etag = null, deadlineMs = 15000} = {}) {
     const msg = Soup.Message.new('GET', url);
     if (!msg) throw new RequestError('Invalid URL');
     if (etag) msg.get_request_headers().append('If-None-Match', etag);
+    const cancellable = new Gio.Cancellable();
+    let expired = false;
+    const deadline = GLib.timeout_add(GLib.PRIORITY_DEFAULT, deadlineMs, () => {
+        expired = true;
+        cancellable.cancel();
+        return GLib.SOURCE_REMOVE;
+    });
     let bytes;
     try {
-        bytes = await session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, null);
+        bytes = await session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, cancellable);
     } catch (e) {
-        if (e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.TIMED_OUT))
+        if (expired || (e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.TIMED_OUT)))
             throw new RequestError('Network timeout');
         throw new RequestError(`Network error: ${e && e.message !== undefined ? e.message : e}`);
+    } finally {
+        if (!expired) GLib.source_remove(deadline);
     }
     const status = msg.get_status();
     if (status === 304) return {status: 304};

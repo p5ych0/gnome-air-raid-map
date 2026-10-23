@@ -18,7 +18,12 @@ export function startServer(routes) {
             msg.set_status(404, null);
             return;
         }
-        const {status = 200, body = '', etag = null, delayMs = 0} = route;
+        const {status = 200, body = '', etag = null, delayMs = 0, dripMs = 0} = route;
+        const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+        if (dripMs) {
+            drip(msg, status, bytes, dripMs);
+            return;
+        }
         const respond = () => {
             const inm = msg.get_request_headers().get_one('If-None-Match');
             const headers = msg.get_response_headers();
@@ -27,7 +32,6 @@ export function startServer(routes) {
                 msg.set_status(304, null);
             } else {
                 msg.set_status(status, null);
-                const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
                 msg.set_response('application/json', Soup.MemoryUse.COPY, bytes);
             }
         };
@@ -55,6 +59,31 @@ export function startServer(routes) {
             server.disconnect();
         },
     };
+}
+
+// Sends the body one byte every dripMs milliseconds. The connection is never
+// idle for long, so only a total deadline stops the request. The drip stops
+// when the client goes away.
+function drip(msg, status, bytes, dripMs) {
+    msg.set_status(status, null);
+    msg.get_response_headers().set_encoding(Soup.Encoding.CHUNKED);
+    const out = msg.get_response_body();
+    let sent = 0, gone = false;
+    const handler = msg.connect('disconnected', () => {
+        gone = true;
+    });
+    msg.pause();
+    GLib.timeout_add(GLib.PRIORITY_DEFAULT, dripMs, () => {
+        if (!gone) {
+            out.append(bytes.slice(sent, sent + 1));
+            if (++sent >= bytes.length) out.complete();
+            msg.unpause();
+        }
+        if (!gone && sent < bytes.length) return GLib.SOURCE_CONTINUE;
+        // A handler left connected would run during garbage collection at exit.
+        msg.disconnect(handler);
+        return GLib.SOURCE_REMOVE;
+    });
 }
 
 let requestedPort = 0;
