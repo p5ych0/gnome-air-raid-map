@@ -32,38 +32,44 @@ export function readJson(path, fallback) {
     }
 }
 
-export function writeJsonAtomic(path, value) {
+function writeTextAtomic(path, text) {
     GLib.mkdir_with_parents(GLib.path_get_dirname(path), 0o755);
-    const data = new TextEncoder().encode(JSON.stringify(value));
     Gio.File.new_for_path(path).replace_contents(
-        data, null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+        new TextEncoder().encode(text), null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
 }
 
+export function writeJsonAtomic(path, value) {
+    writeTextAtomic(path, JSON.stringify(value));
+}
+
+// The version of a boundary file is the SHA-256 of the exact text that this run
+// uses, never a value from the metadata. A metadata entry that does not match
+// the file can then only cause one more download, never a wrong version.
+const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, text, -1);
+
 function loadValid(path) {
-    const json = readJson(path, null);
-    if (!json) return null;
     try {
-        return {json, geometry: prepareGeometry(json)};
+        const [ok, contents] = GLib.file_get_contents(path);
+        if (!ok) return null;
+        const text = new TextDecoder().decode(contents);
+        return {geometry: prepareGeometry(JSON.parse(text)), version: sha256(text)};
     } catch (e) {
         return null;
     }
 }
 
-// The digest of the file content, the version of a file without an ETag.
-const digest = json => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, JSON.stringify(json), -1);
-
+// The metadata entry of a file holds only the ETag and the check time.
 async function loadOne(session, url, path, entry, now) {
     const cached = loadValid(path);
-    const known = cached && entry && typeof entry.etag === 'string' && typeof entry.version === 'string'
-        ? entry : null;
+    const known = cached && entry && typeof entry.etag === 'string' ? entry : null;
     if (cached && known && typeof known.checkedAt === 'number' &&
         now - known.checkedAt >= 0 && now - known.checkedAt < MAX_CACHE_AGE_MS)
-        return {geometry: cached.geometry, entry: known, changed: false};
+        return {geometry: cached.geometry, version: cached.version, entry: known, changed: false};
     // A failed request or an invalid download keeps a valid cached file.
     const keepCache = error => {
         if (!cached) throw error;
-        return {geometry: cached.geometry,
-            entry: known || {etag: '', version: digest(cached.json), checkedAt: 0}, changed: false};
+        return {geometry: cached.geometry, version: cached.version,
+            entry: known || {etag: '', checkedAt: 0}, changed: false};
     };
     let result;
     try {
@@ -71,10 +77,10 @@ async function loadOne(session, url, path, entry, now) {
     } catch (e) {
         return keepCache(e);
     }
-    if (result.status === 304 && cached && known)
-        return {geometry: cached.geometry, entry: {etag: known.etag, version: known.version, checkedAt: now},
-            changed: true};
-    // Without a known ETag no If-None-Match was sent, so a 304 is a failed request.
+    // getJson sends If-None-Match only with a non-empty ETag. Any other 304 is a failed request.
+    if (result.status === 304 && cached && known && known.etag)
+        return {geometry: cached.geometry, version: cached.version,
+            entry: {etag: known.etag, checkedAt: now}, changed: true};
     if (result.status === 304) return keepCache(new Error('Unexpected HTTP 304'));
     let geometry;
     try {
@@ -82,10 +88,9 @@ async function loadOne(session, url, path, entry, now) {
     } catch (e) {
         return keepCache(e);
     }
-    writeJsonAtomic(path, result.json);
-    // Without an ETag, changed content must still change the version and so the render key.
-    const etag = result.etag || '';
-    return {geometry, entry: {etag, version: etag || digest(result.json), checkedAt: now}, changed: true};
+    const text = JSON.stringify(result.json);
+    writeTextAtomic(path, text);
+    return {geometry, version: sha256(text), entry: {etag: result.etag || '', checkedAt: now}, changed: true};
 }
 
 export async function loadGeometry(session, base, cacheDir, now) {
@@ -99,6 +104,6 @@ export async function loadGeometry(session, base, cacheDir, now) {
         writeJsonAtomic(metaPath, {oblasts: oblasts.entry, raions: raions.entry});
     return {
         geometry: {oblasts: oblasts.geometry, raions: raions.geometry},
-        version: `${oblasts.entry.version}|${raions.entry.version}`,
+        version: `${oblasts.version}|${raions.version}`,
     };
 }

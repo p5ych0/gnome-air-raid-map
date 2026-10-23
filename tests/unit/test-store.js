@@ -41,6 +41,10 @@ function square(key, prop, name) {
 }
 const collection = (prop, key) =>
     JSON.stringify({type: 'FeatureCollection', features: [square(key, prop, 'Test')]});
+const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, text, -1);
+// The version of each boundary file is the SHA-256 of its text.
+const version = (oblasts = 'o1', raions = 'r1') =>
+    `${sha256(collection('region', oblasts))}|${sha256(collection('rayon', raions))}`;
 
 // Deletes a folder and everything in it.
 function removeTree(dirPath) {
@@ -79,7 +83,7 @@ test('first load downloads and caches', () => withFixture(async ({server, dir, s
     assertEqual(server.hits.get('/raions.geojson'), 1);
     assertTrue(GLib.file_test(path(dir, 'oblasts.geojson'), GLib.FileTest.EXISTS));
     assertTrue(GLib.file_test(path(dir, 'raions.geojson'), GLib.FileTest.EXISTS));
-    assertEqual(result.version, '"o1"|"r1"');
+    assertEqual(result.version, version());
     assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
 }));
 
@@ -88,7 +92,7 @@ test('fresh cache makes no request', () => withFixture(async ({server, dir, sess
     const result = await loadGeometry(session, server.base, dir, 1060000);
     assertEqual(server.hits.get('/oblasts.geojson'), 1);
     assertEqual(server.hits.get('/raions.geojson'), 1);
-    assertEqual(result.version, '"o1"|"r1"');
+    assertEqual(result.version, version());
 }));
 
 test('old cache revalidates with etag', () => withFixture(async ({server, dir, session}) => {
@@ -101,14 +105,14 @@ test('old cache revalidates with etag', () => withFixture(async ({server, dir, s
     assertEqual(server.notModified.get('/raions.geojson'), 1);
     assertDeepEqual(readJson(path(dir, 'oblasts.geojson'), null), before);
     assertEqual(readJson(path(dir, 'geometry.json'), null).oblasts.checkedAt, later);
-    assertEqual(result.version, '"o1"|"r1"');
+    assertEqual(result.version, version());
 }));
 
 test('changed server copy is downloaded', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     server.setRoute('/oblasts.geojson', {body: collection('region', 'o2'), etag: '"o2"'});
     const result = await loadGeometry(session, server.base, dir, 1000000 + 3600001);
-    assertEqual(result.version, '"o2"|"r1"');
+    assertEqual(result.version, version('o2'));
     assertEqual(result.geometry.oblasts.regions[0].key, 'o2');
     assertEqual(readJson(path(dir, 'oblasts.geojson'), null).features[0].properties.key, 'o2');
 }));
@@ -140,7 +144,7 @@ test('boundaries load at the same time', () => withFixture(async ({server, dir, 
     server.setRoute('/raions.geojson', {body: collection('rayon', 'r1'), etag: '"r1"', delayMs: 300});
     const result = await loadGeometry(session, server.base, dir, 1000000);
     assertEqual(server.maxWaiting, 2);
-    assertEqual(result.version, '"o1"|"r1"');
+    assertEqual(result.version, version());
 }));
 
 test('offline with valid cache uses the cache', () => withFixture(async ({server, dir, session}) => {
@@ -148,7 +152,7 @@ test('offline with valid cache uses the cache', () => withFixture(async ({server
     server.stop();
     const result = await loadGeometry(session, server.base, dir, 1000000 + 7200000);
     assertEqual(result.geometry.raions.regions[0].key, 'r1');
-    assertEqual(result.version, '"o1"|"r1"');
+    assertEqual(result.version, version());
 }));
 
 // Boundary routes without an ETag, like the directory fixture server.
@@ -156,8 +160,6 @@ function withoutEtags(server) {
     server.setRoute('/oblasts.geojson', {body: collection('region', 'o1')});
     server.setRoute('/raions.geojson', {body: collection('rayon', 'r1')});
 }
-const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, text, -1);
-
 test('without etags changed content changes the version', () => withFixture(async ({server, dir, session}) => {
     withoutEtags(server);
     const first = await loadGeometry(session, server.base, dir, 1000000);
@@ -166,7 +168,7 @@ test('without etags changed content changes the version', () => withFixture(asyn
     assertEqual(server.hits.get('/oblasts.geojson'), 2);
     assertEqual(changed.geometry.oblasts.regions[0].key, 'o2');
     assertTrue(changed.version !== first.version, 'changed content keeps the version');
-    assertEqual(first.version, `${sha256(collection('region', 'o1'))}|${sha256(collection('rayon', 'r1'))}`);
+    assertEqual(first.version, version());
 }));
 
 test('without etags the same content keeps the version', () => withFixture(async ({server, dir, session}) => {
@@ -177,13 +179,40 @@ test('without etags the same content keeps the version', () => withFixture(async
     assertEqual(again.version, first.version);
 }));
 
-test('without etags a fresh cache returns the stored version', () => withFixture(async ({server, dir, session}) => {
+test('without etags a fresh cache returns the version of the cached file', () => withFixture(async ({server, dir, session}) => {
     withoutEtags(server);
     const first = await loadGeometry(session, server.base, dir, 1000000);
     const result = await loadGeometry(session, server.base, dir, 1060000);
     assertEqual(server.hits.get('/oblasts.geojson'), 1);
-    assertEqual(readJson(path(dir, 'geometry.json'), null).oblasts.version, sha256(collection('region', 'o1')));
+    // The metadata only revalidates; it holds no version.
+    assertDeepEqual(readJson(path(dir, 'geometry.json'), null).oblasts, {etag: '', checkedAt: 1000000});
+    assertEqual(result.version, version());
     assertEqual(result.version, first.version);
+}));
+
+test('the version comes from the cached file, not from the metadata', () => withFixture(async ({server, dir, session}) => {
+    const first = await loadGeometry(session, server.base, dir, 1000000);
+    // The file changes after the metadata was written for the old content.
+    GLib.file_set_contents(path(dir, 'oblasts.geojson'), collection('region', 'o2'));
+    server.stop();
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertEqual(result.geometry.oblasts.regions[0].key, 'o2');
+    assertEqual(result.version, version('o2'));
+    assertTrue(result.version !== first.version, 'the changed file keeps the old version');
+}));
+
+test('304 to a request without an etag does not renew the cache time', () => withFixture(async ({server, dir, session}) => {
+    withoutEtags(server);
+    await loadGeometry(session, server.base, dir, 1000000);
+    server.setRoute('/oblasts.geojson', {status: 304});
+    server.setRoute('/raions.geojson', {status: 304});
+    const later = 1000000 + 3600001;
+    const result = await loadGeometry(session, server.base, dir, later);
+    assertEqual(server.hits.get('/oblasts.geojson'), 2);
+    assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+    assertEqual(readJson(path(dir, 'geometry.json'), null).oblasts.checkedAt, 1000000);
+    await loadGeometry(session, server.base, dir, later + 60000);
+    assertEqual(server.hits.get('/oblasts.geojson'), 3, 'the next load does not request again');
 }));
 
 test('offline without cache rejects', () => withFixture(async ({server, dir, session}) => {
