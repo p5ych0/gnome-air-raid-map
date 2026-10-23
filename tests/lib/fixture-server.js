@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: MIT
+// Local HTTP server for tests. As a script:
+//   gjs -m tests/lib/fixture-server.js <port> <dir>
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import Soup from 'gi://Soup?version=3.0';
+import System from 'system';
+
+export function startServer(routes) {
+    const table = new Map(Object.entries(routes));
+    const hits = new Map();
+    const server = new Soup.Server();
+    server.add_handler(null, (srv, msg, path) => {
+        hits.set(path, (hits.get(path) || 0) + 1);
+        let route = table.get(path);
+        if (typeof route === 'function') route = route(path);
+        if (!route) {
+            msg.set_status(404, null);
+            return;
+        }
+        const {status = 200, body = '', etag = null, delayMs = 0} = route;
+        const respond = () => {
+            const inm = msg.get_request_headers().get_one('If-None-Match');
+            const headers = msg.get_response_headers();
+            if (etag) headers.replace('ETag', etag);
+            if (etag && inm === etag) {
+                msg.set_status(304, null);
+            } else {
+                msg.set_status(status, null);
+                const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+                msg.set_response('application/json', Soup.MemoryUse.COPY, bytes);
+            }
+        };
+        if (!delayMs) {
+            respond();
+            return;
+        }
+        msg.pause();
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
+            respond();
+            msg.unpause();
+            return GLib.SOURCE_REMOVE;
+        });
+    });
+    const port = arguments_port();
+    server.listen_local(port, Soup.ServerListenOptions.IPV4_ONLY);
+    const uri = server.get_uris()[0];
+    return {
+        base: `http://127.0.0.1:${uri.get_port()}`,
+        hits,
+        setRoute(path, route) {
+            table.set(path, route);
+        },
+        stop() {
+            server.disconnect();
+        },
+    };
+}
+
+let requestedPort = 0;
+function arguments_port() {
+    const p = requestedPort;
+    requestedPort = 0;
+    return p;
+}
+
+function readFile(path) {
+    return GLib.file_get_contents(path)[1];
+}
+
+function serveDirectory(port, dir) {
+    const file = name => GLib.build_filenamev([dir, name]);
+    let flip = false;
+    requestedPort = port;
+    startServer({
+        '/oblasts.geojson': () => ({body: readFile(file('oblasts.geojson'))}),
+        '/raions.geojson': () => ({body: readFile(file('raions.geojson'))}),
+        '/api/v1/threats': () => ({body: readFile(file('threats.json'))}),
+        '/api/v1/alerts': () => {
+            flip = !flip;
+            return {body: readFile(file(flip ? 'alerts-a.json' : 'alerts-b.json'))};
+        },
+    });
+    GLib.MainLoop.new(null, false).run();
+}
+
+if (System.programInvocationName.endsWith('fixture-server.js')) {
+    const [port, dir] = System.programArgs;
+    if (!port || !dir) {
+        printerr('usage: fixture-server.js <port> <dir>');
+        System.exit(2);
+    }
+    serveDirectory(Number(port), dir);
+}
