@@ -1,8 +1,10 @@
 # Scenario: install, the failure banner, and uninstall (plan Task 10). Sourced by session.sh.
 # The container has no systemd user manager. A stub systemctl first in PATH writes
-# its arguments to $OUT/systemctl.log, and the scenario runs the ExecStart lines of
-# the installed units by hand, as systemd runs them for Type=oneshot. The updater
-# gets its data from the local fixture server (fixture.js), not from NEPTUN.
+# "systemctl <arguments>" to $OUT/calls.log, and the scenario runs the ExecStart lines
+# of the installed units by hand, as systemd runs them for Type=oneshot. During the
+# uninstall, a stub gsettings also writes "gsettings <arguments>" to calls.log and
+# then runs the real gsettings. The updater gets its data from the local fixture
+# server (fixture.js), not from NEPTUN.
 # Steps: 1 set a known wallpaper; 2 install; 3 check the files and the systemctl
 # calls; 4 run the service (map-1.png); 5 run the failure unit (banner.png); 6 run
 # the service again (map-2.png); 7 install again: the saved wallpaper must not
@@ -10,7 +12,7 @@
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
-# layout-<n>.json (for compare.js), monitors.json, systemctl.log, *.stdout, *.stderr.
+# layout-<n>.json (for compare.js), monitors.json, calls.log, *.stdout, *.stderr.
 PORT=8765
 SCHEMA=org.gnome.desktop.background
 APP=gnome-air-raid-map
@@ -22,6 +24,9 @@ RUNDIR=$XDG_RUNTIME_DIR/$APP
 UNITS=("$APP.service" "$APP.timer" "$APP-failed.service")
 FIXTURE=$XDG_RUNTIME_DIR/install-fixture
 STUB=$XDG_RUNTIME_DIR/stub-bin
+# Only for the uninstall: install.sh writes the gsettings path into the units.
+GSTUB=$XDG_RUNTIME_DIR/stub-gsettings
+GSETTINGS=$(command -v gsettings)
 KEYS=(picture-uri picture-uri-dark picture-options primary-color)
 # The known wallpaper of step 1, as gsettings get prints it. Both pictures are KNOWN_COLOR.
 KNOWN=("'file:///tmp/known-light.png'" "'file:///tmp/known-dark.png'" "'zoom'" "'#336699'")
@@ -88,10 +93,10 @@ saved_known() {
     [ "$(cat "$STATEDIR/previous-wallpaper")"$'\n' = "$expected" ]
 }
 
-# systemctl_log_is <line ...>: the stub got exactly these calls.
-systemctl_log_is() {
-    sed 's/^/#   systemctl /' "$OUT/systemctl.log"
-    [ "$(cat "$OUT/systemctl.log")" = "$(printf '%s\n' "$@")" ]
+# calls_are <line ...>: the stubs got exactly these calls, in this order.
+calls_are() {
+    sed 's/^/#   /' "$OUT/calls.log"
+    [ "$(cat "$OUT/calls.log")" = "$(printf '%s\n' "$@")" ]
 }
 
 all_exist() {
@@ -136,6 +141,11 @@ install_run() {
     code=$?
     sed "s/^/#   $name: /" "$OUT/$name.stdout" "$OUT/$name.stderr"
     return $code
+}
+
+# with_gsettings_stub <command ...>: runs the command with the stub gsettings first in PATH.
+with_gsettings_stub() {
+    PATH="$GSTUB:$PATH" "$@"
 }
 
 # run_unit <unit> <name>: runs the ExecStart lines of an installed unit in order, as
@@ -202,11 +212,13 @@ for ((i = 0; i < 40; i++)); do
 done
 export AIR_RAID_MAP_API_BASE=http://127.0.0.1:$PORT
 
-mkdir -p "$STUB"
+mkdir -p "$STUB" "$GSTUB"
 printf '%s\n' '#!/bin/sh' '# The container has no systemd user manager: write the arguments to the log.' \
-    "echo \"\$*\" >> '$OUT/systemctl.log'" > "$STUB/systemctl"
-chmod +x "$STUB/systemctl"
-: > "$OUT/systemctl.log"
+    "echo \"systemctl \$*\" >> '$OUT/calls.log'" > "$STUB/systemctl"
+printf '%s\n' '#!/bin/sh' '# Write the arguments to the log, then run the real gsettings.' \
+    "echo \"gsettings \$*\" >> '$OUT/calls.log'" "exec '$GSETTINGS' \"\$@\"" > "$GSTUB/gsettings"
+chmod +x "$STUB/systemctl" "$GSTUB/gsettings"
+: > "$OUT/calls.log"
 export PATH="$STUB:$PATH"
 
 for picture in /tmp/known-light.png /tmp/known-dark.png; do
@@ -247,8 +259,8 @@ check "step 3: a stop of the service (SIGTERM) is a clean exit, not a failure" \
 check "step 3: the banner is a 1200x360 PNG" png_size "$APPDIR/banner.png" 1200 360
 check "step 3: the saved wallpaper has the known values" saved_known
 cp "$STATEDIR/previous-wallpaper" "$OUT/previous-wallpaper"
-check "step 3: systemctl got daemon-reload, then enable --now $APP.timer" systemctl_log_is \
-    '--user show-environment' '--user daemon-reload' "--user enable --now $APP.timer"
+check "step 3: systemctl got daemon-reload, then enable --now $APP.timer" calls_are \
+    'systemctl --user show-environment' 'systemctl --user daemon-reload' "systemctl --user enable --now $APP.timer"
 
 # Step 4: the live map.
 map_step 1
@@ -272,15 +284,26 @@ check "step 7: a second install.sh exits 0" install_run install-2
 check "step 7: the saved wallpaper did not change" same_file "$OUT/previous-wallpaper" "$STATEDIR/previous-wallpaper"
 
 # Step 8: uninstall.
-: > "$OUT/systemctl.log"
+: > "$OUT/calls.log"
 from=$(shell_log_lines)
-check "step 8: install.sh --uninstall exits 0" install_run uninstall --uninstall
+check "step 8: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall --uninstall
 check "step 8: the four keys have the known values again" keys_are "${KNOWN[@]}"
 check "step 8: the program, cache, state and runtime folders are gone" \
     none_exist "$APPDIR" "$CACHEDIR" "$STATEDIR" "$RUNDIR"
 check "step 8: the unit files are gone" none_exist "${UNITS[@]/#/$UNITDIR/}"
-check "step 8: systemctl got disable --now $APP.timer first and daemon-reload last" systemctl_log_is \
-    "--user disable --now $APP.timer" "--user stop $APP.service $APP-failed.service" '--user daemon-reload'
+# A run that fails during the uninstall queues the failure unit (OnFailure=). Its
+# gsettings calls must not come after the restore: stop the timer, then the
+# service, then in a later call the failure unit; then restore; then reload.
+check "step 8: the units stop in order, then the wallpaper is restored, then daemon-reload" calls_are \
+    "systemctl --user disable --now $APP.timer" \
+    "systemctl --user stop $APP.service" \
+    "systemctl --user stop $APP-failed.service" \
+    "systemctl --user reset-failed $APP.service $APP-failed.service" \
+    "gsettings set $SCHEMA picture-uri ${KNOWN[0]}" \
+    "gsettings set $SCHEMA picture-uri-dark ${KNOWN[1]}" \
+    "gsettings set $SCHEMA picture-options ${KNOWN[2]}" \
+    "gsettings set $SCHEMA primary-color ${KNOWN[3]}" \
+    'systemctl --user daemon-reload'
 take restored
 check "step 8: restored.png shows the known wallpaper on each monitor" \
     indented gjs -m "$HERE/scenarios/centered.js" "$OUT/restored.png" "$OUT/monitors.json" "$KNOWN_COLOR"

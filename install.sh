@@ -102,11 +102,29 @@ install_app() {
     echo "$APP: to uninstall, run: $0 --uninstall"
 }
 
+# Clears the failed state of the units. A unit that is not loaded has no state:
+# systemctl then prints "... not loaded." and that is not an error here.
+reset_failed() {
+    local line
+    while IFS= read -r line; do
+        case $line in
+            *' not loaded'*) ;;
+            *) warn "$line" ;;
+        esac
+    done < <(systemctl --user reset-failed "$@" 2>&1)
+}
+
 uninstall_app() {
     local key value unit restored=1
     # Stop the timer first: a run after the restore would set the map again.
     systemctl --user disable --now "$TIMER" || warn "cannot stop $TIMER"
-    systemctl --user stop "$APP.service" "$APP-failed.service" || warn "cannot stop the services"
+    # A run that fails while it stops (for example at its start timeout) queues
+    # the failure unit (OnFailure=). So stop the failure unit in a later call than
+    # the service: this cancels a queued start or ends a running one, and its
+    # gsettings calls cannot come after the restore below.
+    systemctl --user stop "$APP.service" || warn "cannot stop $APP.service"
+    systemctl --user stop "$APP-failed.service" || warn "cannot stop $APP-failed.service"
+    reset_failed "$APP.service" "$APP-failed.service"
 
     if [ -f "$SAVED" ]; then
         while IFS=$'\t' read -r key value; do
