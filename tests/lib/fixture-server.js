@@ -9,6 +9,8 @@ import System from 'system';
 export function startServer(routes) {
     const table = new Map(Object.entries(routes));
     const hits = new Map();
+    // Delayed requests that wait for an answer now, and the most at one time.
+    let waiting = 0, maxWaiting = 0;
     const server = new Soup.Server();
     server.add_handler(null, (srv, msg, path) => {
         hits.set(path, (hits.get(path) || 0) + 1);
@@ -40,7 +42,9 @@ export function startServer(routes) {
             return;
         }
         msg.pause();
+        maxWaiting = Math.max(maxWaiting, ++waiting);
         GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
+            --waiting;
             respond();
             msg.unpause();
             return GLib.SOURCE_REMOVE;
@@ -52,6 +56,9 @@ export function startServer(routes) {
     return {
         base: `http://127.0.0.1:${uri.get_port()}`,
         hits,
+        get maxWaiting() {
+            return maxWaiting;
+        },
         setRoute(path, route) {
             table.set(path, route);
         },

@@ -55,12 +55,16 @@ async function loadOne(session, url, path, entry, now) {
     if (cached && known && typeof known.checkedAt === 'number' &&
         now - known.checkedAt >= 0 && now - known.checkedAt < MAX_CACHE_AGE_MS)
         return {geometry: cached.geometry, entry: known, changed: false};
+    // A failed request or an invalid download keeps a valid cached file.
+    const keepCache = error => {
+        if (!cached) throw error;
+        return {geometry: cached.geometry, entry: known || {etag: '', checkedAt: 0}, changed: false};
+    };
     let result;
     try {
         result = await getJson(session, url, {etag: cached && known ? known.etag : null});
     } catch (e) {
-        if (cached) return {geometry: cached.geometry, entry: known || {etag: '', checkedAt: 0}, changed: false};
-        throw e;
+        return keepCache(e);
     }
     if (result.status === 304 && cached)
         return {geometry: cached.geometry, entry: {etag: known.etag, checkedAt: now}, changed: true};
@@ -69,8 +73,7 @@ async function loadOne(session, url, path, entry, now) {
     try {
         geometry = prepareGeometry(result.json);
     } catch (e) {
-        if (cached) return {geometry: cached.geometry, entry: known || {etag: '', checkedAt: 0}, changed: false};
-        throw e;
+        return keepCache(e);
     }
     writeJsonAtomic(path, result.json);
     return {geometry, entry: {etag: result.etag || '', checkedAt: now}, changed: true};
@@ -79,10 +82,10 @@ async function loadOne(session, url, path, entry, now) {
 export async function loadGeometry(session, base, cacheDir, now) {
     const metaPath = GLib.build_filenamev([cacheDir, 'geometry.json']);
     const meta = readJson(metaPath, {}) || {};
-    const oblasts = await loadOne(session, `${base}/oblasts.geojson`,
-        GLib.build_filenamev([cacheDir, 'oblasts.geojson']), meta.oblasts, now);
-    const raions = await loadOne(session, `${base}/raions.geojson`,
-        GLib.build_filenamev([cacheDir, 'raions.geojson']), meta.raions, now);
+    const load = (name, entry) => loadOne(session, `${base}/${name}.geojson`,
+        GLib.build_filenamev([cacheDir, `${name}.geojson`]), entry, now);
+    // Both files load at the same time, so a slow server costs one deadline, not two.
+    const [oblasts, raions] = await Promise.all([load('oblasts', meta.oblasts), load('raions', meta.raions)]);
     if (oblasts.changed || raions.changed)
         writeJsonAtomic(metaPath, {oblasts: oblasts.entry, raions: raions.entry});
     return {

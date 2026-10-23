@@ -110,6 +110,16 @@ test('corrupt cache is downloaded again', async () => {
     server.stop();
 });
 
+test('boundaries load at the same time', async () => {
+    const {server, dir, session} = setup();
+    server.setRoute('/oblasts.geojson', {body: collection('region', 'o1'), etag: '"o1"', delayMs: 300});
+    server.setRoute('/raions.geojson', {body: collection('rayon', 'r1'), etag: '"r1"', delayMs: 300});
+    const result = await loadGeometry(session, server.base, dir, 1000000);
+    assertEqual(server.maxWaiting, 2);
+    assertEqual(result.version, '"o1"|"r1"');
+    server.stop();
+});
+
 test('offline with valid cache uses the cache', async () => {
     const {server, dir, session} = setup();
     await loadGeometry(session, server.base, dir, 1000000);
