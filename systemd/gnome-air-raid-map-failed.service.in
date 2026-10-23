@@ -1,0 +1,12 @@
+# The failure banner (spec 5.7): gnome-air-raid-map.service starts this unit when a
+# run fails. It only runs gsettings, so it cannot fail for the same reason as the
+# updater. The next good run puts the live map back. install.sh replaces the @...@ values.
+[Unit]
+Description=Air raid map wallpaper failure banner
+
+[Service]
+Type=oneshot
+ExecStart=@GSETTINGS@ set org.gnome.desktop.background picture-uri '@BANNER_URI@'
+ExecStart=@GSETTINGS@ set org.gnome.desktop.background picture-uri-dark '@BANNER_URI@'
+ExecStart=@GSETTINGS@ set org.gnome.desktop.background picture-options 'centered'
+ExecStart=@GSETTINGS@ set org.gnome.desktop.background primary-color '#0e1722'

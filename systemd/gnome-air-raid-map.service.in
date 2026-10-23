@@ -1,0 +1,10 @@
+# One updater run (spec 5.7). install.sh replaces the @...@ values.
+[Unit]
+Description=Air raid map wallpaper update
+OnFailure=gnome-air-raid-map-failed.service
+
+[Service]
+Type=oneshot
+ExecStart=@GJS@ -m @APPDIR@/updater/main.js
+MemoryMax=300M
+TimeoutStartSec=25s

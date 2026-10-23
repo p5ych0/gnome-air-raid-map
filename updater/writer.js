@@ -20,7 +20,7 @@ const PNG_END = [0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82];
 
 // GJS ignores the result of cairo_surface_write_to_png, so a short write
 // (for example, a full disk) gives no error. Check the end of the file.
-function writePng(surface, path) {
+export function writePng(surface, path) {
     surface.writeToPNG(path);
     const stream = Gio.File.new_for_path(path).read(null);
     try {
