@@ -67,7 +67,8 @@ These settings did not change in these versions.
 2. The picture uses the actual size and aspect ratio of each monitor (section 5.6).
 3. The picture follows the same data rules as the Plasma project (section 6.2).
 4. Nothing stays in memory between runs.
-5. One run uses less than 120 MB peak memory and less than 1 s of CPU time.
+5. One run uses less than 1 s of CPU time. Its peak memory is less than
+   120 MB at 1920×1080, and less than 200 MB at the size cap (section 5.6).
 6. Average CPU use stays below 1 % of one core.
 7. The project reuses the JavaScript of the Plasma project where possible.
 8. The picture always shows the NEPTUN attribution and the official-alerts notice.
@@ -193,11 +194,15 @@ and the future extension can both use it.
    does not pass validation counts as a failed request.
 5. Store each valid response and its time in the state file.
 6. Calculate the stale state for alerts and for threats (section 6.2).
-7. Build the render key: a hash of all data and all text that the picture shows.
-8. If the render key is the same as the last key, exit.
-9. Draw the picture. Write it to the picture path (section 5.6).
-10. If the wallpaper settings do not point to the picture, set them.
-11. Write the new render key to the state file. Exit.
+7. Build the render key: a hash of all data and all text that the picture
+   shows, and of the monitor layout.
+8. If the render key is the same as the last key and the picture file
+   exists, go to step 10.
+9. Draw the picture. Write it to the picture path (section 5.6). Write the
+   new render key to the state file.
+10. If the wallpaper settings do not point to the picture, set them. This
+    also puts the live picture back after the failure banner (section 5.7).
+11. Exit.
 
 ### 5.5 Files
 
@@ -207,6 +212,7 @@ and the future extension can both use it.
 | State file (last valid data, times, ETags, render key) | `$XDG_RUNTIME_DIR/gnome-air-raid-map/` (RAM) | Deleted at logout |
 | Picture | `$XDG_RUNTIME_DIR/gnome-air-raid-map/` (RAM) | Deleted at logout |
 | Previous wallpaper settings | `$XDG_STATE_HOME/gnome-air-raid-map/` (normally `~/.local/state/…`) | Until uninstall |
+| Failure banner (section 5.7) | `$XDG_DATA_HOME/gnome-air-raid-map/` (normally `~/.local/share/…`) | Until uninstall |
 
 The picture is in RAM for two reasons:
 
@@ -234,6 +240,12 @@ never comes from a fixed size, and GNOME must not crop or stretch the map.
 - **Resolution:** the picture has enough pixels for the monitor with the
   highest scale. Example: at 200 % scale, a 12-pixel icon becomes 24 physical
   pixels. Text and lines are sharp on each monitor.
+- **Size cap (decision of the designer):** the picture has 16.6 megapixels or
+  fewer (the area of two 4K monitors). If the layout needs more, the updater
+  scales the whole picture down by one factor. The aspect ratio does not
+  change, and GNOME scales the picture up again. Only very large setups (5K,
+  8K, three or more 4K monitors) lose some sharpness. The cap keeps a run
+  inside the memory limits of section 5.7.
 - **Single monitor:** the picture is exactly the monitor size in physical
   pixels. GNOME shows it 1:1, without scaling.
 - **Layout changes:** the monitor layout is part of the render key (section
@@ -276,21 +288,39 @@ methods in a real GNOME Shell and use the first one that passes:
 Pass criteria: GNOME shows each new picture within 2 seconds. No black or
 empty frame appears between pictures. 100 updates in a row all pass.
 
+Method 3 changes the settings on each update. dconf then writes its
+database file to the disk each time. If method 3 is the only method that
+passes, the builder measures the bytes that dconf writes per day and
+reports the number to the owner before the release.
+
 ### 5.7 Scheduling
 
 - A systemd user service runs one updater run (`Type=oneshot`).
 - A systemd user timer starts the service 30 seconds after the last run
   (`OnUnitActiveSec=30s`) and at session start.
 - The timer starts with `graphical-session.target` and stops with it.
-- The service has `MemoryMax=200M` and `TimeoutStartSec=25s`. A broken run
+- The service has `MemoryMax=300M` and `TimeoutStartSec=25s`. A broken run
   cannot grow without limit or block the next run.
 - After suspend, the timer starts the next run within 30 seconds of resume.
 
-**Failure picture.** The service has `OnFailure=` set to a second unit. That
-unit draws a plain picture with the text "НЕ ОНОВЛЮЄТЬСЯ" (not updating) and
-the time, and sets it as the wallpaper. It uses the current monitor layout,
-or the last layout from the state file. It does not use the network or the
-map drawing code. The next successful run sets the live picture again.
+**Failure banner (decision of the designer).** The service has `OnFailure=`
+set to a second unit. That unit only runs `gsettings`. It does not start
+GJS, Cairo, or Pango, so it cannot fail for the same reason as the updater.
+It sets three values:
+
+- `picture-uri` and `picture-uri-dark`: the failure banner.
+- `picture-options`: `centered`. GNOME shows the banner at its own size,
+  in the center of each monitor. It is never stretched or cropped, so the
+  monitor size and aspect ratio do not matter.
+- `primary-color`: `#0e1722`, the map background color. The area around the
+  banner has the same color.
+
+The install script draws the banner once, as a small PNG in
+`$XDG_DATA_HOME`. The banner text is "НЕ ОНОВЛЮЄТЬСЯ" (not updating), "Дані
+на шпалерах можуть бути застарілими" (the wallpaper data can be out of
+date), and "Дотримуйтеся офіційних сигналів тривоги." It shows no time.
+The next successful run sets the live picture and `spanned` again
+(section 5.4, step 10).
 
 ### 5.8 Install and uninstall
 
@@ -301,9 +331,10 @@ Install (one command, for example `./install.sh`):
    and stop.
 2. Copy the program to `~/.local/share/gnome-air-raid-map/`.
 3. Copy the units to `~/.config/systemd/user/`.
-4. Save the current values of `picture-uri`, `picture-uri-dark`, and
-   `picture-options`.
-5. Enable and start the timer.
+4. Save the current values of `picture-uri`, `picture-uri-dark`,
+   `picture-options`, and `primary-color`.
+5. Draw the failure banner (section 5.7).
+6. Enable and start the timer.
 
 Uninstall (`./install.sh --uninstall` or `./uninstall.sh`):
 
@@ -395,18 +426,25 @@ the host system.
 - No process stays in memory between runs.
 - The peak memory of a run does not grow over many runs.
 - Files and folders do not grow over many runs.
+- The memory of `gnome-shell` does not grow because of our picture updates.
 
 Checks:
 
 1. Run the updater 1,000 times against a local fixture server. Do not use
-   NEPTUN for this test. Record the peak RSS of each run. Pass: every run is
-   below 120 MB, and the trend is flat.
+   NEPTUN for this test. Record the peak RSS of each run. Do this once at
+   1920×1080 and once at the size cap. Pass: every run is below the limit of
+   goal 5, and the trend is flat.
 2. After the 1,000 runs, count the files and bytes in the cache and runtime
    folders. Pass: the counts are the same as after run 10.
 3. After the 1,000 runs, look for updater processes. Pass: none.
 4. Run the real timer against NEPTUN for 24 hours. Record `MemoryPeak` of
    each run from systemd, and count errors in the journal. Pass: memory is
    flat, and every error has a known cause (for example, the network was down).
+5. During the 24-hour run, record the PSS and CPU time of `gnome-shell` every
+   minute. Compare with a 24-hour run of the same GNOME session without the
+   updater. Pass: `gnome-shell` PSS has no upward trend that the control run
+   does not have, and the updater adds less than 1 % of one core to
+   `gnome-shell` CPU on average.
 
 ## 8. Development process
 
