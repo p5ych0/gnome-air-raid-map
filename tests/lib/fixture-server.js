@@ -9,6 +9,8 @@ import System from 'system';
 export function startServer(routes) {
     const table = new Map(Object.entries(routes));
     const hits = new Map();
+    // 304 answers to a matching If-None-Match, per path.
+    const notModified = new Map();
     // Delayed requests that wait for an answer now, and the most at one time.
     let waiting = 0, maxWaiting = 0;
     const server = new Soup.Server();
@@ -31,6 +33,7 @@ export function startServer(routes) {
             const headers = msg.get_response_headers();
             if (etag) headers.replace('ETag', etag);
             if (etag && inm === etag) {
+                notModified.set(path, (notModified.get(path) || 0) + 1);
                 msg.set_status(304, null);
             } else {
                 msg.set_status(status, null);
@@ -56,6 +59,7 @@ export function startServer(routes) {
     return {
         base: `http://127.0.0.1:${uri.get_port()}`,
         hits,
+        notModified,
         get maxWaiting() {
             return maxWaiting;
         },

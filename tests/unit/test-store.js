@@ -81,6 +81,8 @@ test('old cache revalidates with etag', async () => {
     const later = 1000000 + 3600001;
     const result = await loadGeometry(session, server.base, dir, later);
     assertEqual(server.hits.get('/oblasts.geojson'), 2);
+    assertEqual(server.notModified.get('/oblasts.geojson'), 1);
+    assertEqual(server.notModified.get('/raions.geojson'), 1);
     assertDeepEqual(readJson(path(dir, 'oblasts.geojson'), null), before);
     assertEqual(readJson(path(dir, 'geometry.json'), null).oblasts.checkedAt, later);
     assertEqual(result.version, '"o1"|"r1"');
@@ -107,6 +109,7 @@ test('corrupt cache is downloaded again', async () => {
     const result = await loadGeometry(session, server.base, dir, 1060000);
     assertEqual(server.hits.get('/oblasts.geojson'), 2);
     assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+    assertDeepEqual(readJson(file, null), JSON.parse(collection('region', 'o1')));
     server.stop();
 });
 
