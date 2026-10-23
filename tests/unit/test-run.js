@@ -212,11 +212,13 @@ for (const [name, route] of [
         const read = readPicture(result.uri);
         assertColorNear(read(...INSIDE), '#0e1722');
         assertTrue(hasLoadingMessage(read), 'no loading message');
-        assertTrue(result.warnings.length === 1 && result.warnings[0].startsWith('boundaries: '),
+        // Without boundaries no alerts response is accepted (core/view.js acceptAlerts).
+        assertTrue(result.warnings.length === 2 && result.warnings[0].startsWith('boundaries: ') &&
+            result.warnings[1] === 'alerts: Boundaries unavailable',
             `warnings: ${JSON.stringify(result.warnings)}`);
         const state = readJson(paths.statePath, null);
-        assertEqual(state.alerts.error, '');
-        assertDeepEqual(state.alerts.payload, ALERTS);
+        assertEqual(state.alerts.error, 'Boundaries unavailable');
+        assertEqual(state.alerts.payload, null);
     }, {...routes(), '/oblasts.geojson': route}));
 }
 
