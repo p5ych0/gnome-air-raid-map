@@ -14,8 +14,13 @@ export function apiBase() {
     return base.replace(/\/+$/, '');
 }
 
+// One run sends four requests to one host at the same time: two boundary files and
+// two feeds. The Soup default of two connections for each host would queue two of them.
+const MAX_CONNECTIONS_PER_HOST = 4;
+
 export function createSession({timeout = 15} = {}) {
-    return new Soup.Session({timeout, user_agent: `gnome-air-raid-map/${VERSION}`});
+    return new Soup.Session({timeout, user_agent: `gnome-air-raid-map/${VERSION}`,
+        max_conns_per_host: MAX_CONNECTIONS_PER_HOST});
 }
 
 // Every failure of getJson. The caller counts it as a failed request (spec 5.4,
