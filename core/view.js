@@ -9,8 +9,7 @@ export function emptyFeed() {
     return {payload: null, lastSuccess: 0, lastChange: 0, digest: '', error: ''};
 }
 
-export function acceptFeed(feed, payload, now) {
-    const digest = sha256(JSON.stringify(payload));
+function acceptFeed(feed, payload, digest, now) {
     return {
         payload,
         lastSuccess: now,
@@ -22,6 +21,30 @@ export function acceptFeed(feed, payload, now) {
 
 export function failFeed(feed, message) {
     return {...feed, error: message};
+}
+
+// A response that does not pass validation is a failed request. It never
+// replaces the last valid data (spec 6.2). Without boundaries only the shape
+// can be checked; buildView checks the keys when the boundaries are back.
+export function acceptAlerts(feed, payload, geometry, now) {
+    try {
+        if (geometry)
+            parseSnapshot(payload, geometry.oblasts, geometry.raions);
+        else if (!payload || !Array.isArray(payload.raions) || !Array.isArray(payload.oblasts))
+            throw new Error('Invalid alert response');
+    } catch (e) {
+        return failFeed(feed, e.message);
+    }
+    return acceptFeed(feed, payload, sha256(JSON.stringify(payload)), now);
+}
+
+export function acceptThreats(feed, payload, now) {
+    try {
+        parseThreats(payload);
+    } catch (e) {
+        return failFeed(feed, e.message);
+    }
+    return acceptFeed(feed, payload, sha256(JSON.stringify(payload)), now);
 }
 
 const clock = ms => GLib.DateTime.new_from_unix_local(Math.floor(ms / 1000)).format('%H:%M');
