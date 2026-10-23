@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import Cairo from 'cairo';
-import {test, run, assertEqual, assertDeepEqual, assertTrue} from '../lib/assert.js';
+import {test, run, assertDeepEqual, assertTrue} from '../lib/assert.js';
 import {parseColor, Canvas2D} from '../../core/canvas.js';
 import {pixelAt, assertColorNear} from '../lib/pixels.js';
 
@@ -76,11 +76,13 @@ test('clearRect makes pixels transparent and reset restores state', () => {
     const {surface, cr, ctx} = setup(10, 10, '#ff0000');
     ctx.translate(100, 100);
     ctx.reset();
-    ctx.clearRect(0, 0, 10, 10);
+    ctx.clearRect(0, 0, 5, 10);
     ctx.fillStyle = '#00ff00';
-    ctx.fillRect(0, 0, 5, 10);
-    assertColorNear(pixelAt(surface, 2, 5), '#00ff00');
-    assertEqual(pixelAt(surface, 8, 5).length, 3);
+    ctx.fillRect(0, 0, 2, 10);
+    assertColorNear(pixelAt(surface, 1, 5), '#00ff00');
+    const cleared = pixelAt(surface, 3, 5);
+    assertTrue(cleared[0] < 50, `cleared pixel is still red: ${cleared}`);
+    assertColorNear(pixelAt(surface, 8, 5), '#ff0000');
     cr.$dispose();
 });
 await run();
