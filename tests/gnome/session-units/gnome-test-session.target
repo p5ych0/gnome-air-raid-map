@@ -1,0 +1,9 @@
+# The graphical session of the test user (tests/gnome/run-systemd.sh). Starting
+# this target is the login: it starts graphical-session.target, as gnome-session
+# does on a real desktop. Units that are WantedBy=graphical-session.target (the
+# updater timer) then start, and they stop when this target stops.
+[Unit]
+Description=Headless GNOME test session
+BindsTo=graphical-session.target
+Wants=gnome-test-shell.service
+After=gnome-test-shell.service
