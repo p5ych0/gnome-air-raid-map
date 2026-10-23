@@ -67,6 +67,21 @@ test('rename replaces picture.png and leaves no temporary file', () => withDir(d
     assertDeepEqual(listDir(dir), ['picture.png']);
 }));
 
+test('a failed rename deletes the temporary file', () => withDir(dir => {
+    // A non-empty folder named picture.png makes the move fail.
+    GLib.mkdir_with_parents(`${dir}/picture.png`, 0o755);
+    GLib.file_set_contents(`${dir}/picture.png/keep`, 'x');
+    const surface = solid(1, 2, 3);
+    try {
+        assertThrows(() => writePicture(surface, dir, 'rename'));
+        assertThrows(() => new Cairo.Context(surface), 'the surface is finished');
+        assertDeepEqual(listDir(dir), ['picture.png']);
+    } finally {
+        Gio.File.new_for_path(`${dir}/picture.png/keep`).delete(null);
+        Gio.File.new_for_path(`${dir}/picture.png`).delete(null);
+    }
+}));
+
 test('alternate writes over the older of two files', () => withDir(dir => {
     const a = `${dir}/picture-a.png`, b = `${dir}/picture-b.png`;
     assertEqual(writePicture(solid(204, 26, 26), dir, 'alternate'), a);

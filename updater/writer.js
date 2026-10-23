@@ -70,8 +70,18 @@ export function writePicture(surface, dir, method) {
             return path;
         }
         const temporary = Gio.File.new_for_path(GLib.build_filenamev([absDir, TEMPORARY]));
-        writePng(surface, temporary.get_path());
-        temporary.move(Gio.File.new_for_path(path), Gio.FileCopyFlags.OVERWRITE, null, null);
+        try {
+            writePng(surface, temporary.get_path());
+            temporary.move(Gio.File.new_for_path(path), Gio.FileCopyFlags.OVERWRITE, null, null);
+        } catch (e) {
+            try {
+                temporary.delete(null);
+            } catch (deleteError) {
+                if (!deleteError.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
+                    logError(deleteError, `Cannot delete ${temporary.get_path()}`);
+            }
+            throw e;
+        }
         return path;
     } finally {
         surface.finish();
