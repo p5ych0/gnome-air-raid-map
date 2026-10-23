@@ -6,9 +6,10 @@
 # then runs the real gsettings. The updater gets its data from the local fixture
 # server (fixture.js), not from NEPTUN.
 # Steps: 1 set a known wallpaper; 2 install; 3 check the files and the systemctl
-# calls; 4 run the service (map-1.png); 5 run the failure unit (banner.png); 6 run
-# the service again (map-2.png); 7 install again: the saved wallpaper must not
-# change; 8 uninstall (restored.png).
+# calls; 4 run the service (map-1.png); 5 run the failure unit (banner.png); 6 remove
+# the alert from the fixture data and run the service again (map-2.png): the screen
+# must show the new picture, not a cached copy of picture-1; 7 install again: the
+# saved wallpaper must not change; 8 uninstall (restored.png).
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -131,6 +132,11 @@ png_size() {
 
 same_file() {
     [ "$(cat "$1")" = "$(cat "$2")" ]
+}
+
+# The Fedora image has no cmp. Without sha256sum both sums are empty: not different.
+different_files() {
+    [ "$(sha256sum < "$1")" != "$(sha256sum < "$2")" ]
 }
 
 # install_run <name> [--uninstall]: runs /repo/install.sh; the output goes to <name>.stdout and .stderr.
@@ -262,8 +268,10 @@ cp "$STATEDIR/previous-wallpaper" "$OUT/previous-wallpaper"
 check "step 3: systemctl got daemon-reload, then enable --now $APP.timer" calls_are \
     'systemctl --user show-environment' 'systemctl --user daemon-reload' "systemctl --user enable --now $APP.timer"
 
-# Step 4: the live map.
+# Step 4: the live map. The fixture data has a red alert on the synthetic square.
 map_step 1
+check "step 4: map-1.png shows the red alert (#cf4655) in the square on each monitor" \
+    indented gjs -m "$HERE/scenarios/square.js" "$OUT/map-1.png" "$OUT/layout-1.json" '#cf4655'
 
 # Step 5: the failure banner.
 from=$(shell_log_lines)
@@ -276,8 +284,13 @@ check "step 5: banner.png shows the banner centered on #0e1722 on each monitor" 
 echo "# step 5: $(tail -n +"$((from + 1))" "$OUT/shell.log" | grep -c '_fileWatches is null') '_fileWatches is null' errors in the new lines of shell.log"
 shell_log_from "$from"
 
-# Step 6: the live map again.
+# Step 6: the live map again, from other data: no alert, so the square has the
+# oblast color. A cached copy of picture-1 would still show the red alert.
+printf '%s\n' '{"oblasts": [], "raions": []}' | tee "$FIXTURE/alerts-a.json" > "$FIXTURE/alerts-b.json"
 map_step 2
+check "step 6: picture-2.png differs from picture-1.png" different_files "$OUT/picture-1.png" "$OUT/picture-2.png"
+check "step 6: map-2.png shows the square without an alert (#223448) on each monitor" \
+    indented gjs -m "$HERE/scenarios/square.js" "$OUT/map-2.png" "$OUT/layout-2.json" '#223448'
 
 # Step 7: a second install keeps the wallpaper from before the first install.
 check "step 7: a second install.sh exits 0" install_run install-2

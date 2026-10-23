@@ -109,6 +109,19 @@ and loads the picture again.
   the new file in one update of four. The color rule alone does not find
   this failure (see "Test").
 
+## Recovery after the failure banner
+
+Checked on 2026-10-24. While the banner shows, the Shell does not watch
+`picture.png`, so the next good run could show a cached copy of the old
+picture, as with `alternate`. Step 6 of `tests/gnome/scenarios/install.sh`
+checks this: before the recovery run, it removes the red alert from the
+fixture data, so the recovered picture is different. After the recovery, the
+screenshot shows the new color `#223448` in the synthetic square on each
+monitor, not the red `#cf4655` of the old picture. This passed in every run:
+Fedora 44 with 1920×1080 and 1080×1920 in one session (3 runs) and with
+1080×1920 alone (1 run), and Ubuntu 24.04 with 1920×1080 (3 runs). So the
+recovery keeps method `rename` and the name `picture.png`.
+
 ## dconf writes
 
 Spec 5.6 asks for this number only if `alternate` is the only method that
