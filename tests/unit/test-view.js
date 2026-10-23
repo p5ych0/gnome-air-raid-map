@@ -2,6 +2,7 @@
 import {test, run, assertEqual, assertDeepEqual, assertTrue} from '../lib/assert.js';
 import {emptyFeed, acceptAlerts, acceptThreats, failFeed, buildView, renderKey} from '../../core/view.js';
 import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
+import {prepareGeometry} from '../../core/mapdata.js';
 import {syntheticGeometry} from '../lib/fixtures.js';
 
 const now = Date.UTC(2026, 9, 23, 14, 5, 30);
@@ -85,6 +86,42 @@ test('layout change changes the key', () => {
     const l2 = pictureLayout(parseDisplayOverride('2560x1440@1'));
     assertTrue(renderKey(v, l1, 'g1') !== renderKey(v, l2, 'g1'));
     assertTrue(renderKey(v, l1, 'g1') !== renderKey(v, l1, 'g2'));
+});
+
+// Two regions, so that alert entries can come in a different order.
+function twoRegionGeometry() {
+    const square = (key, lon) => ({properties: {key}, geometry: {type: 'Polygon',
+        coordinates: [[[lon, 46], [lon + 4, 46], [lon + 4, 50], [lon, 50], [lon, 46]]]}});
+    const regions = prepareGeometry({type: 'FeatureCollection', features: [square('a', 24), square('b', 30)]});
+    return {oblasts: regions, raions: regions};
+}
+const unchangedKey = (alerts, threats, g, at) => renderKey(buildView(alerts, threats, g, at, 'unchanged'),
+    pictureLayout(parseDisplayOverride('1920x1080@1')), 'g1');
+
+test('threat fields that are not drawn are not a change', () => {
+    const entry = {id: 'one', type: 'kab', lat: 50, lon: 30, status: 'active', uncertaintyKm: 5};
+    const a = acceptThreats(emptyFeed(), {epoch: 1, seq: 10, serverTime: now, threats: [entry]}, now);
+    const b = acceptThreats(a, {epoch: 1, seq: 11, serverTime: now + 30000,
+        threats: [{...entry, uncertaintyKm: 8}]}, now + 30000);
+    assertEqual(b.lastChange, now);
+    assertEqual(unchangedKey(fresh, a, geometry, now + 30000), unchangedKey(fresh, b, geometry, now + 30000));
+    const c = acceptThreats(b, {epoch: 1, seq: 12, serverTime: now + 60000,
+        threats: [{...entry, lat: 49}]}, now + 60000);
+    assertEqual(c.lastChange, now + 60000);
+    assertTrue(unchangedKey(fresh, b, geometry, now + 60000) !== unchangedKey(fresh, c, geometry, now + 60000));
+});
+test('alert fields that are not drawn and the entry order are not a change', () => {
+    const two = twoRegionGeometry();
+    const a = acceptAlerts(emptyFeed(), {version: 7, updatedAt: '2026-10-23T14:05:00Z',
+        oblasts: [{key: 'a'}, {key: 'b', level: 'yellow'}], raions: []}, two, now);
+    const b = acceptAlerts(a, {version: 8, updatedAt: '2026-10-23T14:05:30Z',
+        oblasts: [{key: 'b', level: 'yellow'}, {key: 'a', level: 'red'}], raions: []}, two, now + 30000);
+    assertEqual(b.lastChange, now);
+    assertEqual(unchangedKey(a, freshThreats, two, now + 30000), unchangedKey(b, freshThreats, two, now + 30000));
+    const c = acceptAlerts(b, {version: 9, updatedAt: '2026-10-23T14:06:30Z',
+        oblasts: [{key: 'b', level: 'yellow'}, {key: 'a', level: 'yellow'}], raions: []}, two, now + 60000);
+    assertEqual(c.lastChange, now + 60000);
+    assertTrue(unchangedKey(b, freshThreats, two, now + 60000) !== unchangedKey(c, freshThreats, two, now + 60000));
 });
 
 // Ported from the Plasma project: tests/tst_threatsource.qml.

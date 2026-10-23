@@ -23,6 +23,20 @@ export function failFeed(feed, message) {
     return {...feed, error: message};
 }
 
+// The digests cover only what the picture draws. Undocumented provider fields
+// (version, seq, serverTime) and undrawn entry fields change on every poll
+// (spec 4.1). Alerts: the sorted [kind, key, level] entries.
+function alertsDigest(payload) {
+    const entries = [];
+    for (const kind of ['raions', 'oblasts']) {
+        for (const entry of payload[kind]) {
+            const level = entry && entry.level !== undefined ? entry.level : 'red';
+            entries.push(JSON.stringify([kind, entry && entry.key, level]));
+        }
+    }
+    return sha256(JSON.stringify(entries.sort()));
+}
+
 // A response that does not pass validation is a failed request. It never
 // replaces the last valid data (spec 6.2). Without boundaries only the shape
 // can be checked; buildView checks the keys when the boundaries are back.
@@ -35,16 +49,17 @@ export function acceptAlerts(feed, payload, geometry, now) {
     } catch (e) {
         return failFeed(feed, e.message);
     }
-    return acceptFeed(feed, payload, sha256(JSON.stringify(payload)), now);
+    return acceptFeed(feed, payload, alertsDigest(payload), now);
 }
 
 export function acceptThreats(feed, payload, now) {
+    let threats;
     try {
-        parseThreats(payload);
+        threats = parseThreats(payload);
     } catch (e) {
         return failFeed(feed, e.message);
     }
-    return acceptFeed(feed, payload, sha256(JSON.stringify(payload)), now);
+    return acceptFeed(feed, payload, sha256(JSON.stringify(threats)), now);
 }
 
 const clock = ms => GLib.DateTime.new_from_unix_local(Math.floor(ms / 1000)).format('%H:%M');
@@ -57,9 +72,15 @@ function tryParse(parse) {
     }
 }
 
+// parseSnapshot keeps the payload order. Sorted keys keep the entry order out of the render key.
+function sortedAlerts(alerts) {
+    const sorted = map => Object.fromEntries(Object.keys(map).sort().map(key => [key, map[key]]));
+    return {raions: sorted(alerts.raions), oblasts: sorted(alerts.oblasts), count: alerts.count};
+}
+
 export function buildView(alertsFeed, threatsFeed, geometry, now, labelMode) {
     const alertsParse = geometry && alertsFeed.payload
-        ? tryParse(() => parseSnapshot(alertsFeed.payload, geometry.oblasts, geometry.raions))
+        ? tryParse(() => sortedAlerts(parseSnapshot(alertsFeed.payload, geometry.oblasts, geometry.raions)))
         : {value: null, failed: false};
     const threatsParse = threatsFeed.payload
         ? tryParse(() => parseThreats(threatsFeed.payload))
