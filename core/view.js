@@ -84,7 +84,7 @@ export function buildView(alertsFeed, threatsFeed, geometry, now, labelMode) {
         ? tryParse(() => parseThreats(threatsFeed.payload))
         : {value: null, failed: false};
     const alertsStale = alertsParse.failed ||
-        isStale(alertsFeed.lastSuccess, now, alertsFeed.error !== '' || geometry === null);
+        isStale(alertsFeed.lastSuccess, now, alertsFeed.error !== '' || !geometry);
     const threatsStale = threatsParse.failed ||
         isStale(threatsFeed.lastSuccess, now, threatsFeed.error !== '');
     const timeOf = feed => clock(labelMode === 'unchanged' ? feed.lastChange : feed.lastSuccess);

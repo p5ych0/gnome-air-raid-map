@@ -189,4 +189,10 @@ test('without boundaries on the first run alerts are waiting', () => {
     assertEqual(buildView(rejected, freshThreats, null, now + 1000, 'updated').statusLines[0], 'ОЧІКУВАННЯ ДАНИХ');
 });
 
+test('undefined boundaries make a fresh alerts feed stale, like null boundaries', () => {
+    const v = buildView(fresh, freshThreats, undefined, now, 'updated');
+    assertTrue(v.alertsStale);
+    assertTrue(!v.statusLines[0].startsWith('Тривоги: оновлено'));
+});
+
 await run();
