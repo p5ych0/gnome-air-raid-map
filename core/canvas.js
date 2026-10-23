@@ -90,9 +90,12 @@ export class Canvas2D {
     closePath() { this._cr.closePath(); }
     arc(x, y, r, a0, a1) { this._cr.arc(x, y, r, a0, a1); }
 
-    fill() {
+    fill(fillRule = 'nonzero') {
         this._source(this.fillStyle);
+        const previous = this._cr.getFillRule();
+        this._cr.setFillRule(fillRule === 'evenodd' ? Cairo.FillRule.EVEN_ODD : Cairo.FillRule.WINDING);
         this._cr.fillPreserve();
+        this._cr.setFillRule(previous);
     }
 
     stroke() {

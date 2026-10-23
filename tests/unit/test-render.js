@@ -2,7 +2,7 @@
 import {test, run, assertEqual, assertDeepEqual, assertTrue} from '../lib/assert.js';
 import {pixelAt, pixelReader, assertColorNear} from '../lib/pixels.js';
 import {syntheticGeometry, syntheticThreats, syntheticView} from '../lib/fixtures.js';
-import {project, parseSnapshot, parseThreats} from '../../core/mapdata.js';
+import {project, prepareGeometry, parseSnapshot, parseThreats} from '../../core/mapdata.js';
 import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
 import {mapTransform, toScreen, visibleThreats, areaListLimit, areaListPlan, areaItemText, renderPicture}
     from '../../core/render.js';
@@ -52,6 +52,20 @@ test('background outside the map', () => {
 test('red alert fills the oblast', () => {
     const [x, y] = screen(t, INSIDE);
     assertColorNear(draw({alerts: redAlert()})(x, y), '#cf4655');
+});
+
+test('a hole with the exterior winding is not filled by an alert', () => {
+    const ring = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+    const oblasts = prepareGeometry({type: 'FeatureCollection', features: [{
+        properties: {key: 'test', region: 'HOLE'},
+        geometry: {type: 'Polygon', coordinates: [ring(22, 44, 40, 52), ring(28, 47, 34, 49)]},
+    }]});
+    const geometry = {oblasts, raions: oblasts};
+    const alerts = parseSnapshot({oblasts: [{key: 'test'}], raions: []}, oblasts, oblasts);
+    const read = draw({alerts, threats: {points: [], count: 0, areas: []}}, L1080, geometry);
+    const tr = mapTransform(oblasts.bounds, 1920, 1080);
+    assertColorNear(read(...screen(tr, project([31, 48]))), '#0e1722');
+    assertColorNear(read(...screen(tr, project([25, 48]))), '#cf4655');
 });
 
 test('stale alerts are dimmed', () => {

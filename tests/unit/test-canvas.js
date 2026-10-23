@@ -32,6 +32,35 @@ test('fill keeps the path for a following stroke', () => {
     cr.$dispose();
 });
 
+function nestedSquares(ctx) {
+    ctx.beginPath();
+    ctx.moveTo(2, 2); ctx.lineTo(18, 2); ctx.lineTo(18, 18); ctx.lineTo(2, 18); ctx.closePath();
+    ctx.moveTo(7, 7); ctx.lineTo(13, 7); ctx.lineTo(13, 13); ctx.lineTo(7, 13); ctx.closePath();
+    ctx.fillStyle = '#ff0000';
+}
+
+test('evenodd fill leaves a same-winding inner ring empty, nonzero fills it', () => {
+    const {surface, cr, ctx} = setup(20, 20);
+    nestedSquares(ctx);
+    ctx.fill('evenodd');
+    assertColorNear(pixelAt(surface, 4, 10), '#ff0000');
+    assertColorNear(pixelAt(surface, 10, 10), '#000000');
+    ctx.fill();
+    assertColorNear(pixelAt(surface, 10, 10), '#ff0000');
+    cr.$dispose();
+});
+
+test('a fill after an evenodd fill is nonzero again', () => {
+    const {surface, cr, ctx} = setup(20, 20);
+    nestedSquares(ctx);
+    ctx.fill('evenodd');
+    // Code that fills through the raw Cairo context must still see the default rule.
+    cr.setSourceRGB(0, 1, 0);
+    cr.fill();
+    assertColorNear(pixelAt(surface, 10, 10), '#00ff00');
+    cr.$dispose();
+});
+
 test('global alpha blends', () => {
     const {surface, cr, ctx} = setup(10, 10);
     ctx.globalAlpha = 0.5;

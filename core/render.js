@@ -149,7 +149,7 @@ function drawMap(ctx, geometry, view, w, h) {
     }
 
     for (const region of oblasts.regions) {
-        path(region); ctx.fillStyle = '#223448'; ctx.fill();
+        path(region); ctx.fillStyle = '#223448'; ctx.fill('evenodd');
     }
     ctx.globalAlpha = view.alertsStale ? 0.4 : 1;
     if (view.alerts && raions) {
@@ -159,7 +159,7 @@ function drawMap(ctx, geometry, view, w, h) {
             for (const kind of ['oblasts', 'raions']) {
                 for (const region of geometry[kind].regions) {
                     if (view.alerts[kind]['@' + region.key] === level) {
-                        path(region); ctx.fill();
+                        path(region); ctx.fill('evenodd');
                     }
                 }
             }
