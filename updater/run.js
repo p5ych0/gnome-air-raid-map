@@ -66,6 +66,33 @@ function newPicturePath(dir, now) {
     }
 }
 
+// Deletes every picture*.png and *.tmp in dir except the paths in keep. A leftover
+// comes from a run that failed or was killed. Only dir is touched.
+function sweepRuntimeDir(dir, keep) {
+    let names;
+    try {
+        names = Gio.File.new_for_path(dir).enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+    } catch (e) {
+        return;
+    }
+    for (let info = names.next_file(null); info !== null; info = names.next_file(null)) {
+        const name = info.get_name();
+        const path = GLib.build_filenamev([dir, name]);
+        const ours = (name.startsWith('picture') && name.endsWith('.png')) || name.endsWith('.tmp');
+        if (!ours || keep.has(path)) continue;
+        GLib.unlink(path);
+    }
+    names.close(null);
+}
+
+const onScreenPath = uri => {
+    try {
+        return GLib.filename_from_uri(uri)[0];
+    } catch (e) {
+        return '';
+    }
+};
+
 // A failed request or an invalid response keeps the last valid data and makes it
 // stale. It is never a run error (spec 5.4, step 4).
 function applyResponse(feed, settled, accept) {
@@ -115,38 +142,45 @@ export async function runOnce({session, settings, display, paths, now, base,
         !GLib.file_test(previous, GLib.FileTest.IS_REGULAR);
     const draw = name => writePicture(renderPicture(layout, geometry, view), dir, reloadMethod, name);
     let picture = previous;
-    if (previous !== '' && showsPicture(settings, GLib.filename_to_uri(previous, null))) {
-        // The Shell watches the file that it shows, so an update keeps the name.
-        if (drew) picture = draw(GLib.path_get_basename(previous));
-    } else {
-        // The wallpaper must move back to the live picture: after the failure banner,
-        // at the first run, or after a change by the user. Use a new file name.
-        const path = newPicturePath(dir, now);
-        if (drew) {
-            picture = draw(GLib.path_get_basename(path));
-        } else {
-            renameFile(previous, path);
-            picture = path;
-        }
-    }
-
-    // The picture is good even if the state cannot be saved; the next run then draws again.
+    // The picture on screen now: the sweep below keeps it until the Shell has the new one.
+    const onScreen = settings.get_string('picture-uri');
     try {
-        writeJsonAtomic(paths.statePath,
-            {version: STATE_VERSION, alerts, threats, layout, displayState, renderKey: key, picture});
-    } catch (e) {
-        warnings.push(`state file: ${messageOf(e)}`);
-    }
-
-    const uri = GLib.filename_to_uri(picture, null);
-    applyLive(settings, uri, pictureOptions);
-    // The Shell can have an old copy of the previous file: it must not show that file again.
-    if (previous !== '' && previous !== picture) {
-        try {
-            removeFile(previous);
-        } catch (e) {
-            warnings.push(`old picture: ${messageOf(e)}`);
+        if (previous !== '' && showsPicture(settings, GLib.filename_to_uri(previous, null))) {
+            // The Shell watches the file that it shows, so an update keeps the name.
+            if (drew) picture = draw(GLib.path_get_basename(previous));
+        } else {
+            // The wallpaper must move back to the live picture: after the failure banner,
+            // at the first run, or after a change by the user. Use a new file name.
+            const path = newPicturePath(dir, now);
+            if (drew) {
+                picture = draw(GLib.path_get_basename(path));
+            } else {
+                renameFile(previous, path);
+                picture = path;
+            }
         }
+
+        // The picture is good even if the state cannot be saved; the next run then draws again.
+        try {
+            writeJsonAtomic(paths.statePath,
+                {version: STATE_VERSION, alerts, threats, layout, displayState, renderKey: key, picture});
+        } catch (e) {
+            warnings.push(`state file: ${messageOf(e)}`);
+        }
+
+        const uri = GLib.filename_to_uri(picture, null);
+        applyLive(settings, uri, pictureOptions);
+        // The Shell can have an old copy of the previous file: it must not show that file again.
+        if (previous !== '' && previous !== picture) {
+            try {
+                removeFile(previous);
+            } catch (e) {
+                warnings.push(`old picture: ${messageOf(e)}`);
+            }
+        }
+        return {drew, uri, warnings};
+    } finally {
+        // Whatever failed above, no file of this run or of a killed run stays behind.
+        if (drew) sweepRuntimeDir(dir, new Set([picture, onScreenPath(onScreen)]));
     }
-    return {drew, uri, warnings};
 }

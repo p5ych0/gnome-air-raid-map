@@ -352,6 +352,50 @@ test('a locked wallpaper is a run error', () => withRun(async ({dir, once}) => {
     await assertLocked(once({settings: lockedSettings(dir)}));
 }));
 
+const runtimeFiles = paths => {
+    const names = [];
+    const e = Gio.File.new_for_path(paths.runtimeDir).enumerate_children('standard::name', 0, null);
+    for (let i = e.next_file(null); i; i = e.next_file(null)) names.push(i.get_name());
+    return names.sort();
+};
+const pictureFiles = paths => runtimeFiles(paths).filter(n => n.startsWith('picture'));
+
+test('a locked wallpaper leaves at most two pictures and no temporary file in many runs', () =>
+    withRun(async ({dir, paths, once}) => {
+        const settings = lockedSettings(dir);
+        for (let n = 0; n < 5; n++) {
+            await assertLocked(once({settings, now: now + n * 60000}));
+            const files = pictureFiles(paths);
+            assertTrue(files.length <= 2, `run ${n}: ${files.join(' ')}`);
+            assertEqual(files.filter(f => f.endsWith('.tmp')).length, 0);
+        }
+    }));
+
+test('leftovers of a killed run are removed', () => withRun(async ({paths, settings, once}) => {
+    GLib.mkdir_with_parents(paths.runtimeDir, 0o700);
+    for (const name of ['picture-111.png', 'picture-222.png.tmp', 'picture-333.png'])
+        GLib.file_set_contents(`${paths.runtimeDir}/${name}`, 'x');
+    const result = await once();
+    assertDeepEqual(pictureFiles(paths), [`picture-${now}.png`]);
+    assertEqual(settings.get_string('picture-uri'), result.uri);
+}));
+
+test('the picture that the settings show survives a run that cannot apply', () =>
+    withRun(async ({dir, paths, once}) => {
+        GLib.mkdir_with_parents(paths.runtimeDir, 0o700);
+        const old = `${paths.runtimeDir}/picture-111.png`;
+        GLib.file_set_contents(old, 'x');
+        GLib.file_set_contents(`${paths.runtimeDir}/picture-222.png`, 'x');
+        const seen = {
+            get_string: key => key === 'picture-options' ? 'zoom' : GLib.filename_to_uri(old, null),
+            is_writable: key => key !== 'picture-uri',
+            delay() {}, set_string() {}, apply() {},
+        };
+        await assertLocked(once({settings: seen}));
+        assertTrue(GLib.file_test(old, GLib.FileTest.EXISTS), 'the picture on screen was deleted');
+        assertTrue(pictureFiles(paths).length <= 2, pictureFiles(paths).join(' '));
+    }));
+
 // Runs argv in a new process; env sets its variables (null removes one).
 async function spawn(argv, env) {
     const launcher = new Gio.SubprocessLauncher({
