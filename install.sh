@@ -45,16 +45,48 @@ require() {
     printf '%s\n' "$path"
 }
 
-# Saves the wallpaper keys, one "key<TAB>value" line for each key, with the value
-# as gsettings prints it. A saved file is never replaced: after a second install,
-# the uninstall must still put back the wallpaper from before the first install.
+# points_into <gjs> <value> <folder ...>: the value, a URI as gsettings get prints
+# it, points to a file in one of the folders.
+points_into() {
+    "$1" -c '
+        const {Gio, GLib} = imports.gi;
+        const [text, ...folders] = ARGV;
+        let file = null;
+        try {
+            const uri = GLib.Variant.parse(null, text, null, null).unpack();
+            if (typeof uri === "string") file = Gio.File.new_for_uri(uri);
+        } catch (e) {
+            // Not a URI: not a picture of the program.
+        }
+        const inside = file !== null && file.get_path() !== null &&
+            folders.some(folder => file.has_prefix(Gio.File.new_for_path(folder)));
+        imports.system.exit(inside ? 0 : 1);' "${@:2}"
+}
+
+# save_wallpaper <gjs>: saves the wallpaper keys, one "key<TAB>value" line for each
+# key, with the value as gsettings prints it. A saved file is never replaced: after
+# a second install, the uninstall must still put back the wallpaper from before the
+# first install. If the saved file was lost, the wallpaper can show a picture of
+# the program (the map or the banner). That picture is not the wallpaper of the
+# user: save nothing for that key, and the uninstall resets it to the GNOME default.
 save_wallpaper() {
-    local key value temporary=$SAVED.tmp
+    local key value temporary=$SAVED.tmp folders=("$APPDIR")
     [ -e "$SAVED" ] && return 0
+    if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+        folders+=("$XDG_RUNTIME_DIR/$APP")
+    fi
     mkdir -p "$STATEDIR"
     : > "$temporary"
     for key in "${KEYS[@]}"; do
         value=$(gsettings get "$SCHEMA" "$key")
+        case $key in
+            picture-uri | picture-uri-dark)
+                if points_into "$1" "$value" "${folders[@]}"; then
+                    warn "$key is $value, a picture of $APP: it is not saved," \
+                        "and the uninstall resets $key to the GNOME default"
+                    continue
+                fi ;;
+        esac
         printf '%s\t%s\n' "$key" "$value" >> "$temporary"
     done
     mv "$temporary" "$SAVED"
@@ -95,7 +127,7 @@ install_app() {
     done
 
     # 3. The wallpaper from before the install.
-    save_wallpaper
+    save_wallpaper "$gjs"
 
     # 4. The failure banner.
     "$gjs" -m "$APPDIR/updater/banner.js" "$APPDIR/banner.png"
@@ -127,7 +159,7 @@ reset_failed() {
 }
 
 uninstall_app() {
-    local key value unit restored=1
+    local key value unit restored=1 saved=' '
     # Stop the timer first: a run after the restore would set the map again.
     systemctl --user disable --now "$TIMER" || warn "cannot stop $TIMER"
     # A run that fails while it stops (for example at its start timeout) queues
@@ -142,6 +174,7 @@ uninstall_app() {
         while IFS=$'\t' read -r key value; do
             case " ${KEYS[*]} " in
                 *" $key "*)
+                    saved+="$key "
                     gsettings set "$SCHEMA" "$key" "$value" || {
                         warn "cannot set $key to $value"
                         restored=0
@@ -149,6 +182,16 @@ uninstall_app() {
                 *) warn "$SAVED: unknown key '$key'" ;;
             esac
         done < "$SAVED"
+        # A key without a line had a picture of the program at the install (save_wallpaper).
+        for key in "${KEYS[@]}"; do
+            case $saved in
+                *" $key "*) ;;
+                *) gsettings reset "$SCHEMA" "$key" || {
+                        warn "cannot reset $key"
+                        restored=0
+                    } ;;
+            esac
+        done
     else
         warn "no saved wallpaper in $SAVED: the wallpaper settings stay as they are"
     fi

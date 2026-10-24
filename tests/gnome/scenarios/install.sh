@@ -13,7 +13,9 @@
 # screen must show the new picture, not a cached copy of picture-1; 7 install again
 # while the timer runs: the saved wallpaper must not change, and the timer stops
 # before the files are copied; 8 uninstall (restored.png); 9 install without a
-# graphical session: enable the timer, but do not start it.
+# graphical session: enable the timer, but do not start it; 10 lose the saved
+# wallpaper while the map shows, install again: the pictures of the program are not
+# saved, and the uninstall resets their keys.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -103,6 +105,21 @@ saved_known() {
     done
     sed 's/^/#   previous-wallpaper: /' "$STATEDIR/previous-wallpaper"
     [ "$(cat "$STATEDIR/previous-wallpaper")"$'\n' = "$expected" ]
+}
+
+# saved_keys_are <key ...>: the saved wallpaper file has lines for exactly these keys.
+saved_keys_are() {
+    sed 's/^/#   previous-wallpaper: /' "$STATEDIR/previous-wallpaper"
+    [ "$(cut -f 1 "$STATEDIR/previous-wallpaper")" = "$(printf '%s\n' "$@")" ]
+}
+
+# no_user_value <key ...>: the keys have no user value (as after gsettings reset).
+no_user_value() {
+    indented gjs -c '
+        const settings = new imports.gi.Gio.Settings({schema_id: ARGV[0]});
+        const set = ARGV.slice(1).filter(key => settings.get_user_value(key) !== null);
+        print(set.length ? `user values: ${set.join(" ")}` : "no user values");
+        imports.system.exit(set.length ? 1 : 0);' "$SCHEMA" "$@"
 }
 
 # calls_are <line ...>: the stubs got exactly these calls, in this order.
@@ -391,6 +408,38 @@ check "step 9: systemctl got enable $APP.timer, without --now" calls_are \
     "systemctl --user enable $APP.timer"
 check "step 9: install.sh says that the map starts at the next graphical login" \
     grep -q 'next graphical login' "$OUT/install-3.stdout"
+
+# Step 10: the saved wallpaper is lost while the map shows (picture-uri) and the
+# banner shows (picture-uri-dark). A new install must not save these pictures as the
+# wallpaper from before: it saves nothing for these keys, and the uninstall resets them.
+check "step 10: run 3 of the service exits 0" run_unit "$APP.service" service-3
+gsettings set "$SCHEMA" picture-uri-dark "'$BANNER_URI'"
+rm -f "$STATEDIR/previous-wallpaper"
+check "step 10: install.sh exits 0" install_run install-4
+check "step 10: install.sh warns that it does not save picture-uri" \
+    grep -q "warning: picture-uri is 'file://$RUNDIR/" "$OUT/install-4.stderr"
+check "step 10: install.sh warns that it does not save picture-uri-dark" \
+    grep -q "warning: picture-uri-dark is '$BANNER_URI'" "$OUT/install-4.stderr"
+check "step 10: the saved wallpaper has only picture-options and primary-color" \
+    saved_keys_are picture-options primary-color
+options=$(gsettings get "$SCHEMA" picture-options)
+color=$(gsettings get "$SCHEMA" primary-color)
+: > "$OUT/calls.log"
+check "step 10: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall-2 --uninstall
+check "step 10: the uninstall sets the saved keys and resets picture-uri and picture-uri-dark" calls_are \
+    "systemctl --user disable --now $APP.timer" \
+    "systemctl --user stop $APP.service" \
+    "systemctl --user stop $APP-failed.service" \
+    "systemctl --user reset-failed $APP.service $APP-failed.service" \
+    "gsettings set $SCHEMA picture-options $options" \
+    "gsettings set $SCHEMA primary-color $color" \
+    "gsettings reset $SCHEMA picture-uri" \
+    "gsettings reset $SCHEMA picture-uri-dark" \
+    'systemctl --user daemon-reload'
+check "step 10: picture-uri and picture-uri-dark have the GNOME default values" \
+    no_user_value picture-uri picture-uri-dark
+check "step 10: the program, cache, state and runtime folders are gone" \
+    none_exist "$APPDIR" "$CACHEDIR" "$STATEDIR" "$RUNDIR"
 
 echo "# install: $status (0: every check passed)"
 exit $status
