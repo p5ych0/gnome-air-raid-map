@@ -407,7 +407,7 @@ test('a locked key keeps the picture that the other key still shows', () =>
 test('a run that does not draw removes leftovers of a killed run', () =>
     withRun(async ({paths, settings, once}) => {
         const first = await once();
-        for (const name of ['picture-111.png', 'picture-222.png.tmp', 'state.json.tmp'])
+        for (const name of ['picture-111.png', 'picture-222.png.tmp', '.goutputstream-ABC123'])
             GLib.file_set_contents(`${paths.runtimeDir}/${name}`, 'x');
         const second = await once({now: now + 20000});
         assertEqual(second.drew, false, 'the same data is not drawn again');

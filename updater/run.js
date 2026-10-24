@@ -66,9 +66,11 @@ function newPicturePath(dir, now) {
     }
 }
 
-// Deletes every picture*.png and *.tmp in dir except the paths in keep. A leftover
-// comes from a run that failed or was killed. Only dir is touched. A file that
-// cannot be deleted is one warning in warnings (once, also after two sweeps), not an error.
+// Deletes every picture*.png, *.tmp and .goutputstream-* in dir except the paths in
+// keep. A leftover comes from a run that failed or was killed. The .goutputstream-*
+// files are the temporary files of the state write (GIO replace_contents). Only dir
+// is touched. A file that cannot be deleted is one warning in warnings (once, also
+// after two sweeps), not an error.
 function sweepRuntimeDir(dir, keep, warnings) {
     let names;
     try {
@@ -80,7 +82,8 @@ function sweepRuntimeDir(dir, keep, warnings) {
         for (let info = names.next_file(null); info !== null; info = names.next_file(null)) {
             const name = info.get_name();
             const path = GLib.build_filenamev([dir, name]);
-            const ours = (name.startsWith('picture') && name.endsWith('.png')) || name.endsWith('.tmp');
+            const ours = (name.startsWith('picture') && name.endsWith('.png')) || name.endsWith('.tmp') ||
+                name.startsWith('.goutputstream-');
             if (!ours || keep.has(path)) continue;
             if (GLib.unlink(path) !== 0 && GLib.file_test(path, GLib.FileTest.EXISTS | GLib.FileTest.IS_SYMLINK)) {
                 // The sweep at the start and the sweep at the end of a run can both fail on one file.

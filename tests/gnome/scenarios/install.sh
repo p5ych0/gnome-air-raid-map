@@ -30,8 +30,9 @@
 # rename, and the old program is moved back; 18 stop the install with SIGHUP after the
 # first rename, with its stderr on /dev/full (a closed terminal): the recovery still
 # moves the old program back and starts the timer; 19 leave the old program in
-# $APPDIR.old with $APPDIR absent, as a SIGKILL between the two renames does, and
-# make the copy of the next install fail: the old program is moved back first.
+# $APPDIR.old and a complete $APPDIR.new with $APPDIR absent, as a SIGKILL between the
+# two renames does, and make the copy of the next install fail: the old program is
+# moved back first, and the failure script does not run.
 # Step 8 also checks that the uninstall deletes the staging folders.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
@@ -752,18 +753,23 @@ check "step 18: the wallpaper keys point to the new live picture" live_keys "$(s
 # Step 19: a SIGKILL or a power loss between the two renames of the swap runs no trap.
 # It leaves $APPDIR absent and the only complete program in $APPDIR.old. The next
 # install must move it back before it deletes the staging folders: if the copy then
-# fails, the old program is still the one to run.
+# fails, the old program is still the one to run. The kill also leaves the complete
+# new program in $APPDIR.new.
 check "step 19: a clean install.sh exits 0" install_run install-19
 mv -T "$APPDIR" "$APPDIR.old"
+cp -R "$APPDIR.old" "$APPDIR.new"
 touch "$STUB/active/$APP.timer"
 : > "$OUT/calls.log"
-check "step 19: install.sh fails when the copy fails" not with_failing_cp install_run install-20
+check "step 19: install.sh fails when the copy fails" \
+    not with_gsettings_stub with_failing_cp install_run install-20
 sed 's/^/#   /' "$OUT/calls.log"
 check "step 19: the old program is moved back and is complete" \
     all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
 check "step 19: the failed install left no staging folder" none_exist "$APPDIR.new" "$APPDIR.old"
 check "step 19: systemctl got stop $APP.timer, then start $APP.timer" \
     call_order "systemctl --user stop $APP.timer" "systemctl --user start $APP.timer"
+check "step 19: the old program is intact, so the failure script did not run" \
+    not grep -q '^gsettings set ' "$OUT/calls.log"
 check "step 19: the service still runs and sets the live picture" run_unit "$APP.service" service-9
 check "step 19: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
 
