@@ -73,18 +73,42 @@ function setWallpaper(path) {
 
 const decode = bytes => new TextDecoder().decode(bytes);
 
-// Bytes that dconf-service gave to write() since it started (0 if it does not run).
-function dconfWritten() {
+// The counter `field` of /proc/<pid>/io of the process `comm` since it started
+// (0 if it does not run).
+function ioCounter(comm, field) {
     const proc = Gio.File.new_for_path('/proc').enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
     for (let info = proc.next_file(null); info; info = proc.next_file(null)) {
         const pid = info.get_name();
         try {
-            if (!/^\d+$/.test(pid) || decode(GLib.file_get_contents(`/proc/${pid}/comm`)[1]).trim() !== 'dconf-service')
+            if (!/^\d+$/.test(pid) || decode(GLib.file_get_contents(`/proc/${pid}/comm`)[1]).trim() !== comm)
                 continue;
-            return Number(/^wchar: (\d+)$/m.exec(decode(GLib.file_get_contents(`/proc/${pid}/io`)[1]))[1]);
+            const io = decode(GLib.file_get_contents(`/proc/${pid}/io`)[1]);
+            return Number(new RegExp(`^${field}: (\\d+)$`, 'm').exec(io)[1]);
         } catch (e) { /* the process ended */ }
     }
     return 0;
+}
+
+// Bytes that dconf-service gave to write().
+const dconfWritten = () => ioCounter('dconf-service', 'wchar');
+
+// Bytes that gvfsd-metadata caused to be written to the disk (write_bytes: the
+// kernel counts a page when the process dirties it). GIO sends a metadata call to
+// gvfsd-metadata for Gio.File.move and Gio.File.delete, but not for rename(2).
+const metadataWritten = () => ioCounter('gvfsd-metadata', 'write_bytes');
+
+// The files in ~/.local/share/gvfs-metadata as "name size", or "no folder".
+function metadataFiles() {
+    try {
+        const dir = Gio.File.new_for_path(`${GLib.get_user_data_dir()}/gvfs-metadata`);
+        const children = dir.enumerate_children('standard::name,standard::size', Gio.FileQueryInfoFlags.NONE, null);
+        const files = [];
+        for (let info = children.next_file(null); info; info = children.next_file(null))
+            files.push(`${info.get_name()} ${info.get_size()}`);
+        return files.length ? files.sort().join(', ') : 'empty folder';
+    } catch (e) {
+        return 'no folder';
+    }
 }
 
 function dconfSize() {
@@ -143,10 +167,10 @@ function classify(rgb, oldRef, newRef) {
     return `other(${rgb})`;
 }
 
+// unlink(2), not Gio.File.delete: with GVfs, Gio.File.delete also writes GVfs
+// metadata, and the metadata count must show only the writes of the method.
 function deleteFile(path) {
-    try {
-        Gio.File.new_for_path(path).delete(null);
-    } catch (e) { /* already gone */ }
+    GLib.unlink(path);
 }
 
 // Polls until the screen shows picture i or timeoutMs passes. Returns which
@@ -179,7 +203,7 @@ async function main() {
 
     const rows = [], firstNew = [], took = [], slip = [];
     let passed = 0, colorPassed = 0, failuresKept = 0;
-    const dconfBefore = dconfWritten();
+    const dconfBefore = dconfWritten(), metadataBefore = metadataWritten();
     for (let i = 1; i <= UPDATES; i++) {
         // The screen must show picture i - 1 before the write.
         const start = await waitForPicture(i - 1, SETTLE_MS);
@@ -232,6 +256,7 @@ async function main() {
     }
     deleteFile(`${shotDir}/wait.png`);
     const dconfBytes = dconfWritten() - dconfBefore;
+    const metadataBytes = metadataWritten() - metadataBefore;
 
     GLib.file_set_contents(`${outDir}/reload-${method}.tsv`,
         `${['update', 'time', 'result', 'color-rule', 'start-color', 'start-marker', 'marker',
@@ -244,6 +269,8 @@ async function main() {
     print(`# ${method}: dconf-service wrote ${dconfBytes} bytes in ${UPDATES} updates ` +
         `(${Math.round(dconfBytes * 1440 / UPDATES)} bytes per day at one update per minute); ` +
         `dconf user database ${dconfSize()} bytes`);
+    print(`# ${method}: gvfsd-metadata write_bytes ${metadataBytes} in ${UPDATES} updates; ` +
+        `~/.local/share/gvfs-metadata: ${metadataFiles()}`);
 }
 
 const loop = GLib.MainLoop.new(null, false);
