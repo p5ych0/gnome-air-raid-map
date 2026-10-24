@@ -92,7 +92,10 @@ test('an https session uses the CA file, also for new connections', () => {
 });
 
 test('the CA file is the PEM file of the system CAs', () => {
-    if (!GLib.file_test(SYSTEM_CA_FILE, GLib.FileTest.EXISTS)) return;
+    if (!GLib.file_test(SYSTEM_CA_FILE, GLib.FileTest.EXISTS)) {
+        print(`# skip: no ${SYSTEM_CA_FILE}, so no check of the CA file of an https session`);
+        return;
+    }
     assertEqual(anchorsOf(createSession({base: 'https://neptun.in.ua'}).get_tls_database()), SYSTEM_CA_FILE);
 });
 
@@ -153,7 +156,10 @@ test('a TLS request trusts the CA file and does not load the p11-kit trust store
     assertDeepEqual(tlsRequestIn(TEST_CERT), {status: 200, json: {ok: true}, p11KitTrust: false}));
 
 test('a TLS request fails for a server that the CA file does not trust', () => {
-    if (!GLib.file_test(SYSTEM_CA_FILE, GLib.FileTest.EXISTS)) return;
+    if (!GLib.file_test(SYSTEM_CA_FILE, GLib.FileTest.EXISTS)) {
+        print(`# skip: no ${SYSTEM_CA_FILE}, so no check of a server that it does not trust`);
+        return;
+    }
     const result = tlsRequestIn(SYSTEM_CA_FILE);
     assertTrue(/^Network error: .*TLS certificate/.test(result.error), `result ${JSON.stringify(result)}`);
     assertEqual(result.p11KitTrust, false, 'the p11-kit trust store is loaded');
