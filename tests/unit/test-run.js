@@ -366,18 +366,56 @@ async function runMain(env) {
     return {status: process.get_exit_status(), stdout, stderr};
 }
 
+// The variables of main.js for a run in dir against the fixture server.
+const mainEnv = (dir, server) => ({
+    XDG_RUNTIME_DIR: `${dir}/run`, XDG_CACHE_HOME: `${dir}/cache`, XDG_STATE_HOME: `${dir}/state`,
+    XDG_DATA_HOME: `${dir}/data`, GSETTINGS_BACKEND: 'memory', AIR_RAID_MAP_DISPLAY: '1280x720@1',
+    AIR_RAID_MAP_API_BASE: server.base, AIR_RAID_MAP_LABEL_MODE: null, AIR_RAID_MAP_PICTURE_OPTIONS: null,
+});
+
 test('main runs once and exits 0', () => withRun(async ({server, dir}) => {
-    const result = await runMain({
-        XDG_RUNTIME_DIR: `${dir}/run`, XDG_CACHE_HOME: `${dir}/cache`, XDG_STATE_HOME: `${dir}/state`,
-        XDG_DATA_HOME: `${dir}/data`, GSETTINGS_BACKEND: 'memory', AIR_RAID_MAP_DISPLAY: '1280x720@1',
-        AIR_RAID_MAP_API_BASE: server.base, AIR_RAID_MAP_LABEL_MODE: null, AIR_RAID_MAP_PICTURE_OPTIONS: null,
-    });
+    const result = await runMain(mainEnv(dir, server));
     assertDeepEqual(result, {status: 0, stdout: '', stderr: ''});
     const picture = readJson(`${dir}/run/gnome-air-raid-map/state.json`, null).picture;
     assertTrue(/^picture-\d+\.png$/.test(GLib.path_get_basename(picture)), `picture: ${picture}`);
     assertDeepEqual(pictureSize(GLib.filename_to_uri(picture, null)), [1280, 720]);
     assertEqual(server.hits.get('/api/v1/alerts'), 1);
 }));
+
+// A damaged state file, or a state file of another version, gives the start state:
+// the run is a first run. damage(state) gives the text of the state file.
+for (const [name, damage] of [
+    ['a state file that is not JSON', () => '{"version": 1, "alerts": {"payload"'],
+    ['a state file with values of the wrong type', () => JSON.stringify({version: 1,
+        alerts: 'x', threats: [1], displayState: 'x', renderKey: 7, picture: {}})],
+    ['a state file of another version', state => JSON.stringify({...state, version: 2})],
+]) {
+    test(`${name} gives a first run`, () => withRun(async ({paths, settings, once}) => {
+        await once();
+        GLib.file_set_contents(paths.statePath, damage(readJson(paths.statePath, null)));
+        // With the saved state, the same data in the same minute is not drawn again.
+        const second = await once({now: now + 20000});
+        assertEqual(second.drew, true);
+        assertDeepEqual(second.warnings, []);
+        assertEqual(settings.get_string('picture-uri'), second.uri);
+        assertColorNear(readPicture(second.uri)(...INSIDE), '#cf4655');
+        const state = readJson(paths.statePath, null);
+        assertEqual(state.version, 1);
+        assertEqual(state.alerts.lastSuccess, now + 20000);
+        assertEqual(state.picture, pathOf(second.uri));
+    }));
+
+    test(`main exits 0 and draws after ${name}`, () => withRun(async ({server, dir}) => {
+        const statePath = `${dir}/run/gnome-air-raid-map/state.json`;
+        GLib.mkdir_with_parents(GLib.path_get_dirname(statePath), 0o700);
+        GLib.file_set_contents(statePath, damage({version: 1, renderKey: 'old', picture: `${dir}/old.png`}));
+        const result = await runMain(mainEnv(dir, server));
+        assertDeepEqual(result, {status: 0, stdout: '', stderr: ''});
+        const state = readJson(statePath, null);
+        assertEqual(state.version, 1);
+        assertDeepEqual(pictureSize(GLib.filename_to_uri(state.picture, null)), [1280, 720]);
+    }));
+}
 
 test('main exits 1 with one line when XDG_RUNTIME_DIR is missing', async () => {
     const result = await runMain({
