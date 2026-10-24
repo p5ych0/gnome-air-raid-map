@@ -362,14 +362,13 @@ const runtimeFiles = paths => {
 };
 const pictureFiles = paths => runtimeFiles(paths).filter(n => n.startsWith('picture'));
 
-test('a locked wallpaper leaves at most two pictures and no temporary file in many runs', () =>
+// The run checks the keys before it writes: a locked wallpaper leaves no file at all.
+test('a locked wallpaper leaves no file in the runtime folder in many runs', () =>
     withRun(async ({dir, paths, once}) => {
         const settings = lockedSettings(dir);
         for (let n = 0; n < 5; n++) {
             await assertLocked(once({settings, now: now + n * 60000}));
-            const files = pictureFiles(paths);
-            assertTrue(files.length <= 2, `run ${n}: ${files.join(' ')}`);
-            assertEqual(files.filter(f => f.endsWith('.tmp')).length, 0);
+            assertDeepEqual(runtimeFiles(paths), [], `run ${n}`);
         }
     }));
 
@@ -474,6 +473,8 @@ test('a locked key stops the run before it writes a file', () =>
     withRun(async context => {
         const {server, paths, settings, once} = context;
         await stateWithSplitKeys(context);
+        // A leftover of a killed run: the start sweep would delete it, so it must not run first.
+        GLib.file_set_contents(`${paths.runtimeDir}/picture-111.png`, 'x');
         const before = runtimeFiles(paths);
         const locked = {
             get_string: key => settings.get_string(key),

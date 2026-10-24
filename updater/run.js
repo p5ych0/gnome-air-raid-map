@@ -166,8 +166,8 @@ export async function runOnce({session, settings, display, paths, now, base,
     // The new file name comes before the sweep, so that the run cannot take the name of a
     // file that the sweep deletes.
     const path = showsPrevious || keepsPrevious ? '' : newPicturePath(dir, now);
-    // Check the keys before the run makes, renames or deletes a file: a run that cannot
-    // set the wallpaper changes no file.
+    // Check the keys before the run makes, renames or deletes a file in the runtime
+    // folder: a run that cannot set the wallpaper changes no file there.
     checkLive(settings, GLib.filename_to_uri(path === '' ? previous : path, null), pictureOptions);
     // Earlier runs that were killed can have left files: delete them before this run
     // makes new ones. A run that draws keeps only the files on screen: the saved picture
