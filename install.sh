@@ -101,8 +101,13 @@ save_wallpaper() {
     mv "$temporary" "$SAVED"
 }
 
+# The new program is built in NEW, next to APPDIR, and then renamed to APPDIR: the
+# old program stays complete until the new one is complete. OLD holds the old
+# program for the short time of the swap.
+NEW=$APPDIR.new
+OLD=$APPDIR.old
 # Set by install_app. timer_stopped: the install stopped the timer, and the timer
-# does not run again. program_broken: the install deleted the old program, and the
+# does not run again. program_broken: the install replaced the old program, and the
 # new program and units are not complete.
 timer_stopped=0
 program_broken=0
@@ -112,18 +117,24 @@ banner_uri=
 # The EXIT trap of the install. If the install fails after it stopped the timer, the
 # last map would stay on the screen with its old time and no marking. So start the
 # timer again: if the program is broken, its runs fail and the failure unit shows
-# the banner. Show the banner now, if the old failure script is still there.
+# the banner. Show the banner now, if a failure script is still there.
 recover_failed_install() {
-    local status=$?
+    local status=$? dir shown=0
     trap - EXIT
+    [ "$status" -eq 0 ] || rm -rf "$NEW"
     if [ "$status" -ne 0 ] && [ "$timer_stopped" -eq 1 ]; then
         warn "the install failed: starting $TIMER again"
         systemctl --user start "$TIMER" || warn "cannot start $TIMER: run $0 again"
         if [ "$program_broken" -eq 1 ]; then
-            if [ -f "$APPDIR/updater/failed.sh" ] && [ -f "$APPDIR/banner.png" ]; then
-                /bin/sh "$APPDIR/updater/failed.sh" "$gsettings" "$banner_uri" ||
-                    warn "cannot show the failure banner"
-            else
+            for dir in "$APPDIR" "$OLD"; do
+                if [ -f "$dir/updater/failed.sh" ] && [ -f "$dir/banner.png" ]; then
+                    shown=1
+                    /bin/sh "$dir/updater/failed.sh" "$gsettings" "$banner_uri" ||
+                        warn "cannot show the failure banner"
+                    break
+                fi
+            done
+            if [ "$shown" -eq 0 ]; then
                 warn "the program in $APPDIR is not complete: run $0 again to install it"
             fi
         fi
@@ -142,9 +153,11 @@ install_app() {
     check_unit_value "$APPDIR"
     banner_uri=$("$gjs" -c 'print(imports.gi.Gio.File.new_for_path(ARGV[0]).get_uri())' "$APPDIR/banner.png")
 
-    # 1. The program. On an update, a run that starts while the old files are
-    # deleted fails and shows the banner. So stop the timer and a run that is in
-    # progress first; step 5 starts the timer again. If a step fails before that,
+    # 1. The program. Build it in NEW, and swap it in with renames. Until the swap,
+    # the old program and its failure script are not changed, so a failed copy (for
+    # example a full disk) leaves the old program working. A run that starts during
+    # the swap fails and shows the banner. So stop the timer and a run that is in
+    # progress first; step 4 starts the timer again. If a step fails before that,
     # the EXIT trap starts the timer again.
     trap recover_failed_install EXIT
     if systemctl --user is-active --quiet "$TIMER"; then
@@ -155,11 +168,18 @@ install_app() {
     if [ -e "$UNITDIR/$APP.service" ]; then
         systemctl --user stop "$APP.service" || warn "cannot stop $APP.service"
     fi
-    mkdir -p "$APPDIR"
+    # Delete what an earlier install that stopped left.
+    rm -rf "$NEW" "$OLD"
+    mkdir -p "$(dirname "$APPDIR")" "$NEW"
+    cp -R "$SOURCE/core" "$SOURCE/updater" "$NEW/"
+    cp "$SOURCE/LICENSE" "$NEW/"
+    "$gjs" -m "$NEW/updater/banner.js" "$NEW/banner.png"
     program_broken=1
-    rm -rf "$APPDIR/core" "$APPDIR/updater"
-    cp -R "$SOURCE/core" "$SOURCE/updater" "$APPDIR/"
-    cp "$SOURCE/LICENSE" "$APPDIR/"
+    if [ -e "$APPDIR" ]; then
+        mv "$APPDIR" "$OLD"
+    fi
+    mv "$NEW" "$APPDIR"
+    rm -rf "$OLD"
 
     # 2. The units. In a unit file, %% is one %: the banner URI escapes some
     # characters as %XX.
@@ -177,10 +197,7 @@ install_app() {
     # 3. The wallpaper from before the install.
     save_wallpaper "$gjs"
 
-    # 4. The failure banner.
-    "$gjs" -m "$APPDIR/updater/banner.js" "$APPDIR/banner.png"
-
-    # 5. The timer. Without a graphical session (for example over SSH or on a
+    # 4. The timer. Without a graphical session (for example over SSH or on a
     # text console) every run fails, so only enable the timer: it starts with
     # graphical-session.target at the next graphical login.
     systemctl --user daemon-reload

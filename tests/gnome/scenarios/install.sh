@@ -19,7 +19,9 @@
 # fail after it stopped the timer: the timer starts again and the banner shows;
 # 12 lose the saved wallpaper while the banner shows: the uninstall resets the four
 # keys, and does not leave a deleted picture; 13 lose the saved wallpaper while
-# the wallpaper is not a picture of the program: the uninstall leaves the keys.
+# the wallpaper is not a picture of the program: the uninstall leaves the keys;
+# 14 make the copy of a second install fail: the old program, its failure script
+# and its live picture stay, the timer starts again, and no staging folder is left.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -523,6 +525,41 @@ check "step 13: the uninstall only reads the two picture keys" calls_are \
     "gsettings get $SCHEMA picture-uri-dark" \
     'systemctl --user daemon-reload'
 check "step 13: the four keys have the known values" keys_are "${KNOWN[@]}"
+
+# Step 14: the copy of the program fails (as on a full disk). The install builds the
+# new program next to the old one, so the old program and its failure script must stay
+# complete: the timer starts again, and a run of the service still shows the live map.
+# A stub cp fails the recursive copy and runs the real cp for all other calls.
+FAILCP=$XDG_RUNTIME_DIR/stub-failing-cp
+mkdir -p "$FAILCP"
+printf '%s\n' '#!/bin/sh' '# Fail the copy of the folders: no space left.' \
+    'if [ "$1" = -R ]; then echo "cp: error writing: No space left on device" >&2; exit 1; fi' \
+    "exec '$(command -v cp)' \"\$@\"" > "$FAILCP/cp"
+chmod +x "$FAILCP/cp"
+
+# with_failing_cp <command ...>: runs the command with the stub cp first in PATH.
+with_failing_cp() {
+    PATH="$FAILCP:$PATH" "$@"
+}
+
+check "step 14: a clean install.sh exits 0" install_run install-8
+touch "$STUB/active/$APP.timer"
+: > "$OUT/calls.log"
+check "step 14: install.sh fails when the copy fails" not with_failing_cp install_run install-9
+sed 's/^/#   /' "$OUT/calls.log"
+check "step 14: the old program and its failure script are still there" \
+    all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
+check "step 14: systemctl got stop $APP.timer, then start $APP.timer" \
+    call_order "systemctl --user stop $APP.timer" "systemctl --user start $APP.timer"
+check "step 14: the failed install left no staging folder" none_exist "$APPDIR.new" "$APPDIR.old"
+check "step 14: the service still runs and sets the live picture" run_unit "$APP.service" service-4
+check "step 14: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
+# An earlier install that stopped left both folders: the next install deletes them.
+mkdir -p "$APPDIR.new/updater" "$APPDIR.old/updater"
+check "step 14: a clean install.sh exits 0 after the failed one" install_run install-10
+check "step 14: no staging folder is left after the install" none_exist "$APPDIR.new" "$APPDIR.old"
+check "step 14: the installed program is complete" \
+    all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
 
 echo "# install: $status (0: every check passed)"
 exit $status
