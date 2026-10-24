@@ -5,9 +5,8 @@ import {syntheticGeometry, syntheticThreats, syntheticView} from '../lib/fixture
 import {project, prepareGeometry, parseSnapshot, parseThreats} from '../../core/mapdata.js';
 import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
 import Cairo from 'cairo';
-import * as render from '../../core/render.js';
 import {mapTransform, toScreen, visibleThreats, areaListLimit, areaListPlan, areaItemText, renderPicture,
-    drawMonitor} from '../../core/render.js';
+    drawMonitor, monitorPlan} from '../../core/render.js';
 
 const L1080 = pictureLayout(parseDisplayOverride('1920x1080@1'));
 const bounds = syntheticGeometry().oblasts.bounds;
@@ -116,7 +115,7 @@ test('each monitor gets its own map', () => {
 });
 
 // A monitor with the size and scale of an earlier monitor gets a copy of its pixels (Task 11b).
-const copies = display => (render.monitorPlan?.(pictureLayout(parseDisplayOverride(display)).monitors) ?? [])
+const copies = display => monitorPlan(pictureLayout(parseDisplayOverride(display)).monitors)
     .map(({copyOf}, i, plan) => (copyOf ? plan.findIndex(entry => entry.rect === copyOf) : -1));
 
 test('a monitor with the size and scale of an earlier monitor copies it', () => {
@@ -130,7 +129,7 @@ test('a monitor with the size and scale of an earlier monitor copies it', () => 
 
 test('overlapping monitors are all drawn', () => {
     const monitors = [0, 50, 200].map(x => ({x, y: 0, width: 100, height: 100, scale: 1}));
-    assertDeepEqual((render.monitorPlan?.(monitors) ?? []).map(entry => entry.copyOf), [null, null, null]);
+    assertDeepEqual(monitorPlan(monitors).map(entry => entry.copyOf), [null, null, null]);
 });
 
 test('a copied monitor has the pixels of a drawn monitor', () => {

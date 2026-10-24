@@ -10,8 +10,7 @@ import {prepareGeometry} from '../../core/mapdata.js';
 import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
 import {renderPicture} from '../../core/render.js';
 import {createSession} from '../../updater/net.js';
-import * as store from '../../updater/store.js';
-import {loadGeometry, readJson, writeJsonAtomic} from '../../updater/store.js';
+import {loadGeometry, readJson, readPrepared, writeJsonAtomic, writePrepared} from '../../updater/store.js';
 
 const STORE_URL = GLib.Uri.resolve_relative(import.meta.url, '../../updater/store.js', GLib.UriFlags.NONE);
 
@@ -231,16 +230,16 @@ const otherGeometry = () => prepareGeometry(JSON.parse(collection('region', 'oth
 
 test('a load writes the prepared boundaries for the version of each file', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
-    assertDeepEqual(store.readPrepared?.(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o1'))),
+    assertDeepEqual(readPrepared(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o1'))),
         prepareGeometry(JSON.parse(collection('region', 'o1'))));
-    assertDeepEqual(store.readPrepared?.(preparedPath(dir, 'raions'), sha256(collection('rayon', 'r1'))),
+    assertDeepEqual(readPrepared(preparedPath(dir, 'raions'), sha256(collection('rayon', 'r1'))),
         prepareGeometry(JSON.parse(collection('rayon', 'r1'))));
 }));
 
 test('a prepared entry for the version of the file is used', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
     // A valid entry for the same version, with other content: the load must take it as it is.
-    store.writePrepared?.(preparedPath(dir, 'oblasts'), otherGeometry(), sha256(collection('region', 'o1')));
+    writePrepared(preparedPath(dir, 'oblasts'), otherGeometry(), sha256(collection('region', 'o1')));
     const result = await loadGeometry(session, server.base, dir, 1060000);
     assertEqual(result.geometry.oblasts.regions[0].key, 'other');
     assertEqual(result.version, version());
@@ -249,10 +248,10 @@ test('a prepared entry for the version of the file is used', () => withFixture(a
 
 test('a prepared entry for another version is rebuilt', () => withFixture(async ({server, dir, session}) => {
     await loadGeometry(session, server.base, dir, 1000000);
-    store.writePrepared?.(preparedPath(dir, 'oblasts'), otherGeometry(), sha256(collection('region', 'old')));
+    writePrepared(preparedPath(dir, 'oblasts'), otherGeometry(), sha256(collection('region', 'old')));
     const result = await loadGeometry(session, server.base, dir, 1060000);
     assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
-    assertDeepEqual(store.readPrepared?.(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o1'))),
+    assertDeepEqual(readPrepared(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o1'))),
         prepareGeometry(JSON.parse(collection('region', 'o1'))), 'the entry is not rebuilt');
 }));
 
@@ -261,7 +260,7 @@ test('a changed boundary file rebuilds its prepared entry', () => withFixture(as
     GLib.file_set_contents(path(dir, 'oblasts.geojson'), collection('region', 'o2'));
     const result = await loadGeometry(session, server.base, dir, 1060000);
     assertEqual(result.geometry.oblasts.regions[0].key, 'o2');
-    assertTrue(store.readPrepared?.(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o2'))),
+    assertTrue(readPrepared(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o2'))),
         'no prepared entry for the new version');
 }));
 
@@ -290,11 +289,11 @@ for (const [damage, change] of Object.entries(DAMAGE)) {
         const file = preparedPath(dir, 'raions');
         const [, bytes] = GLib.file_get_contents(file);
         GLib.file_set_contents(file, change(bytes));
-        assertEqual(store.readPrepared?.(file, sha256(collection('rayon', 'r1'))), null, 'the damaged entry is read');
+        assertEqual(readPrepared(file, sha256(collection('rayon', 'r1'))), null, 'the damaged entry is read');
         const result = await loadGeometry(session, server.base, dir, 1060000);
         assertDeepEqual(result.geometry.raions, prepareGeometry(JSON.parse(collection('rayon', 'r1'))));
         assertEqual(result.version, version());
-        assertTrue(store.readPrepared?.(file, sha256(collection('rayon', 'r1'))), 'the entry is not rebuilt');
+        assertTrue(readPrepared(file, sha256(collection('rayon', 'r1'))), 'the entry is not rebuilt');
     }));
 }
 
@@ -326,8 +325,8 @@ test('prepared boundaries give the same geometry and the same picture', () => {
     const dir = GLib.dir_make_tmp('air-raid-prepared-XXXXXX');
     try {
         const fresh = prepareGeometry(richCollection());
-        store.writePrepared?.(path(dir, 'x.prepared'), fresh, 'v1');
-        const loaded = store.readPrepared?.(path(dir, 'x.prepared'), 'v1');
+        writePrepared(path(dir, 'x.prepared'), fresh, 'v1');
+        const loaded = readPrepared(path(dir, 'x.prepared'), 'v1');
         assertDeepEqual(loaded, fresh);
         const layout = pictureLayout(parseDisplayOverride('640x360@1'));
         const pixels = geometry => {
