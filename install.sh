@@ -108,9 +108,11 @@ NEW=$APPDIR.new
 OLD=$APPDIR.old
 # Set by install_app. timer_stopped: the install stopped the timer, and the timer
 # does not run again. program_broken: the install started to replace the old
-# program, and the program in APPDIR or the units are not complete.
+# program, and the program in APPDIR or the units are not complete. installed: the
+# install is complete.
 timer_stopped=0
 program_broken=0
+installed=0
 gsettings=
 banner_uri=
 
@@ -120,10 +122,12 @@ banner_uri=
 # the banner. Show the banner now, if a failure script is still there.
 # If the swap stopped between its two renames, APPDIR is absent and OLD holds the
 # old program, which is complete: move it back first.
+# A termination signal (for example SIGTERM or SIGHUP) runs this trap with status 0.
+# So the trap uses installed, and not the status, to know that the install failed.
 recover_failed_install() {
     local status=$? shown=0
     trap - EXIT
-    if [ "$status" -ne 0 ]; then
+    if [ "$installed" -eq 0 ]; then
         rm -rf "$NEW"
         if { [ -e "$OLD" ] || [ -L "$OLD" ]; } && [ ! -e "$APPDIR" ] && [ ! -L "$APPDIR" ]; then
             if mv -T "$OLD" "$APPDIR"; then
@@ -133,7 +137,7 @@ recover_failed_install() {
             fi
         fi
     fi
-    if [ "$status" -ne 0 ] && [ "$timer_stopped" -eq 1 ]; then
+    if [ "$installed" -eq 0 ] && [ "$timer_stopped" -eq 1 ]; then
         warn "the install failed: starting $TIMER again"
         systemctl --user start "$TIMER" || warn "cannot start $TIMER: run $0 again"
         if [ "$program_broken" -eq 1 ]; then
@@ -146,6 +150,9 @@ recover_failed_install() {
                 warn "the program in $APPDIR is not complete: run $0 again to install it"
             fi
         fi
+    fi
+    if [ "$installed" -eq 0 ] && [ "$status" -eq 0 ]; then
+        status=1
     fi
     exit "$status"
 }
@@ -218,6 +225,7 @@ install_app() {
         echo "$APP: installed. No graphical session runs now: the map starts at the next graphical login."
     fi
     timer_stopped=0
+    installed=1
     echo "$APP: to uninstall, run: $0 --uninstall"
 }
 

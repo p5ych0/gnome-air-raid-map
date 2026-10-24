@@ -24,7 +24,9 @@
 # and its live picture stay, the timer starts again, and no staging folder is left;
 # 15 make the swap fail between its two renames: the old program is moved back, the
 # timer starts again, no wallpaper key points to a missing file, and the next run
-# works. Step 8 also checks that the uninstall deletes the staging folders.
+# works; 16 stop the install with SIGTERM after the first rename of the swap: the
+# result is the same as in step 15, and the install exits with a non-zero status.
+# Step 8 also checks that the uninstall deletes the staging folders.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -613,6 +615,45 @@ check "step 15: the old program is intact, so the failure script did not run" \
     not grep -q '^gsettings set ' "$OUT/calls.log"
 check "step 15: the service still runs and sets the live picture" run_unit "$APP.service" service-5
 check "step 15: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
+
+# Step 16: a termination signal (SIGTERM or SIGHUP) stops the install after the first
+# rename of the swap. Bash runs the EXIT trap with status 0 then, so the trap must not
+# depend on the status. A stub mv does the real rename, and then, for the rename of
+# the old program to $APPDIR.old only, sends SIGTERM to its parent: the install. It
+# sends the signal once: the trap moves the old program back with the same rename.
+TERMMV=$XDG_RUNTIME_DIR/stub-term-mv
+mkdir -p "$TERMMV"
+rm -f "$TERMMV/sent"
+printf '%s\n' '#!/bin/sh' '# Do the rename. After the rename of the old program, stop the install.' \
+    "'$(command -v mv)' \"\$@\" || exit 1" \
+    'for argument; do' \
+    "    if [ \"\$argument\" = '$APPDIR.old' ] && [ ! -e '$TERMMV/sent' ]; then" \
+    "        : > '$TERMMV/sent'; kill -TERM \"\$PPID\"" \
+    '    fi' \
+    'done' > "$TERMMV/mv"
+chmod +x "$TERMMV/mv"
+
+# with_terminating_mv <command ...>: runs the command with the stub mv first in PATH.
+with_terminating_mv() {
+    PATH="$TERMMV:$PATH" "$@"
+}
+
+check "step 16: a clean install.sh exits 0" install_run install-13
+touch "$STUB/active/$APP.timer"
+: > "$OUT/calls.log"
+check "step 16: install.sh exits with a non-zero status when SIGTERM stops it" \
+    not with_gsettings_stub with_terminating_mv install_run install-14
+sed 's/^/#   /' "$OUT/calls.log"
+check "step 16: the old program is moved back and is complete" \
+    all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
+check "step 16: the failed install left no staging folder" none_exist "$APPDIR.new" "$APPDIR.old"
+check "step 16: systemctl got stop $APP.timer, then start $APP.timer" \
+    call_order "systemctl --user stop $APP.timer" "systemctl --user start $APP.timer"
+check "step 16: no wallpaper key points to a missing file" keys_point_to_files
+check "step 16: the old program is intact, so the failure script did not run" \
+    not grep -q '^gsettings set ' "$OUT/calls.log"
+check "step 16: the service still runs and sets the live picture" run_unit "$APP.service" service-6
+check "step 16: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
 
 echo "# install: $status (0: every check passed)"
 exit $status
