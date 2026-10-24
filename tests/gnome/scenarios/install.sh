@@ -25,7 +25,11 @@
 # 15 make the swap fail between its two renames: the old program is moved back, the
 # timer starts again, no wallpaper key points to a missing file, and the next run
 # works; 16 stop the install with SIGTERM after the first rename of the swap: the
-# result is the same as in step 15, and the install exits with a non-zero status.
+# result is the same as in step 15, and the install exits with a non-zero status;
+# 17 send SIGTERM before the first rename of the swap ends: the install waits for the
+# rename, and the old program is moved back; 18 stop the install with SIGHUP after the
+# first rename, with its stderr on /dev/full (a closed terminal): the recovery still
+# moves the old program back and starts the timer.
 # Step 8 also checks that the uninstall deletes the staging folders.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
@@ -654,6 +658,94 @@ check "step 16: the old program is intact, so the failure script did not run" \
     not grep -q '^gsettings set ' "$OUT/calls.log"
 check "step 16: the service still runs and sets the live picture" run_unit "$APP.service" service-6
 check "step 16: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
+
+# make_signal_mv <folder> <signal> <before|after>: writes a stub mv into the folder. For
+# the rename that has $APPDIR.old as an argument, and once only (the recovery uses the
+# same rename), it sends the signal to its parent, the install. "before": it sends the
+# signal, waits 1 s, and then does the rename, so the install gets the signal while mv
+# runs. "after": it does the rename, and then sends the signal.
+make_signal_mv() {
+    local folder=$1 signal=$2 when=$3 send
+    send="[ ! -e '$folder/sent' ] && : > '$folder/sent' && kill -$signal \"\$PPID\""
+    mkdir -p "$folder"
+    rm -f "$folder/sent"
+    {
+        echo '#!/bin/sh'
+        if [ "$when" = before ]; then
+            echo 'for argument; do'
+            echo "    if [ \"\$argument\" = '$APPDIR.old' ]; then $send && sleep 1; fi"
+            echo 'done'
+            echo "exec '$(command -v mv)' \"\$@\""
+        else
+            echo "'$(command -v mv)' \"\$@\" || exit 1"
+            echo 'for argument; do'
+            echo "    if [ \"\$argument\" = '$APPDIR.old' ]; then $send; fi"
+            echo 'done'
+        fi
+    } > "$folder/mv"
+    chmod +x "$folder/mv"
+}
+
+# with_stub_mv <folder> <command ...>: runs the command with the stub mv of the folder first in PATH.
+with_stub_mv() {
+    local folder=$1
+    shift
+    PATH="$folder:$PATH" "$@"
+}
+
+# Step 17: SIGTERM comes while mv does the first rename of the swap. Bash must wait for
+# mv, and only then run the recovery: if it ran the recovery at once, the old program
+# would not be in $APPDIR.old yet, and nothing would move it back.
+SIGMV17=$XDG_RUNTIME_DIR/stub-term-before-mv
+make_signal_mv "$SIGMV17" TERM before
+
+check "step 17: a clean install.sh exits 0" install_run install-15
+touch "$STUB/active/$APP.timer"
+: > "$OUT/calls.log"
+check "step 17: install.sh exits with a non-zero status when SIGTERM comes during the rename" \
+    not with_gsettings_stub with_stub_mv "$SIGMV17" install_run install-16
+sed 's/^/#   /' "$OUT/calls.log"
+# If the install did not wait for mv, mv is still running here: wait until it ends.
+sleep 2
+check "step 17: the old program is moved back and is complete" \
+    all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
+check "step 17: the failed install left no staging folder" none_exist "$APPDIR.new" "$APPDIR.old"
+check "step 17: systemctl got stop $APP.timer, then start $APP.timer" \
+    call_order "systemctl --user stop $APP.timer" "systemctl --user start $APP.timer"
+check "step 17: no wallpaper key points to a missing file" keys_point_to_files
+check "step 17: the old program is intact, so the failure script did not run" \
+    not grep -q '^gsettings set ' "$OUT/calls.log"
+check "step 17: the service still runs and sets the live picture" run_unit "$APP.service" service-7
+check "step 17: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
+
+# Step 18: SIGHUP comes after the first rename of the swap, and the terminal is closed:
+# a write to stderr fails. The recovery must go on after a warning that it cannot write.
+# /dev/full makes every write fail. install_run_closed is install_run with this stderr.
+SIGMV18=$XDG_RUNTIME_DIR/stub-hup-after-mv
+make_signal_mv "$SIGMV18" HUP after
+
+# install_run_closed <name>: runs /repo/install.sh with stderr on /dev/full.
+install_run_closed() {
+    local name=$1 code
+    /repo/install.sh > "$OUT/$name.stdout" 2> /dev/full
+    code=$?
+    sed "s/^/#   $name: /" "$OUT/$name.stdout"
+    return $code
+}
+
+check "step 18: a clean install.sh exits 0" install_run install-17
+touch "$STUB/active/$APP.timer"
+: > "$OUT/calls.log"
+check "step 18: install.sh exits with a non-zero status when SIGHUP stops it" \
+    not with_gsettings_stub with_stub_mv "$SIGMV18" install_run_closed install-18
+sed 's/^/#   /' "$OUT/calls.log"
+check "step 18: the old program is moved back and is complete" \
+    all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
+check "step 18: the failed install left no staging folder" none_exist "$APPDIR.new" "$APPDIR.old"
+check "step 18: systemctl got stop $APP.timer, then start $APP.timer" \
+    call_order "systemctl --user stop $APP.timer" "systemctl --user start $APP.timer"
+check "step 18: the service still runs and sets the live picture" run_unit "$APP.service" service-8
+check "step 18: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
 
 echo "# install: $status (0: every check passed)"
 exit $status

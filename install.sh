@@ -122,10 +122,14 @@ banner_uri=
 # the banner. Show the banner now, if a failure script is still there.
 # If the swap stopped between its two renames, APPDIR is absent and OLD holds the
 # old program, which is complete: move it back first.
-# A termination signal (for example SIGTERM or SIGHUP) runs this trap with status 0.
-# So the trap uses installed, and not the status, to know that the install failed.
+# The traps for SIGHUP and SIGTERM make bash wait for a running child and exit with a
+# non-zero status. Other termination signals run this trap with status 0. So the trap
+# uses installed, and not the status, to know that the install failed.
+# set +e: when the terminal is closed, a warning cannot be written, and the recovery
+# must not stop there.
 recover_failed_install() {
     local status=$? shown=0
+    set +e
     trap - EXIT
     if [ "$installed" -eq 0 ]; then
         rm -rf "$NEW"
@@ -151,9 +155,6 @@ recover_failed_install() {
             fi
         fi
     fi
-    if [ "$installed" -eq 0 ] && [ "$status" -eq 0 ]; then
-        status=1
-    fi
     exit "$status"
 }
 
@@ -175,6 +176,11 @@ install_app() {
     # progress first; step 4 starts the timer again. If a step fails before that,
     # the EXIT trap starts the timer again.
     trap recover_failed_install EXIT
+    # Without these traps, bash runs the EXIT trap at once on SIGHUP or SIGTERM, with a
+    # child (cp, mv, systemctl) still running and with status 0. With them, bash waits
+    # for the child, and the status is not 0.
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
     if systemctl --user is-active --quiet "$TIMER"; then
         timer_stopped=1
         systemctl --user stop "$TIMER"
