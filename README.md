@@ -15,16 +15,17 @@ and boundary data.
 **KDE Plasma 6:** use [plasma-air-raid-map](https://github.com/p5ych0/plasma-air-raid-map).
 This project is the GNOME version of it.
 
-![The air-raid map as the GNOME wallpaper: red and yellow alert regions, small white threat icons, the status time at the top right, and the legend and NEPTUN attribution at the bottom](docs/images/gnome-air-raid-map.png)
+![The air-raid map as the GNOME wallpaper](docs/images/gnome-air-raid-map.png)
 
 GNOME Shell 50 on Fedora 44, one 1920×1080 monitor, live NEPTUN data
 (24 October 2026, 20:09 UTC).
 
 ## Requirements
 
-- GNOME 46 or newer, on Linux. Examples: Ubuntu 24.04 LTS, Ubuntu 26.04 LTS,
-  Debian 13, and Fedora 40 or newer. We test on Fedora 44 (GNOME 50) and
-  Ubuntu 24.04 (GNOME 46).
+- GNOME 46 or newer, on Linux. We test on Fedora 44 (GNOME 50) and
+  Ubuntu 24.04 (GNOME 46). Other distributions with GNOME 46 or newer, for
+  example Ubuntu 26.04 LTS and Debian 13, should also work, but we do not
+  test them.
 - A systemd user session.
 - Internet access to `neptun.in.ua` over HTTPS, and the system CA
   certificates (package `ca-certificates`).
@@ -253,10 +254,12 @@ plain background at each side of the banner. The text stays fully visible.
   monitors). For a larger layout, the updater scales the whole picture down,
   and GNOME scales it up again. The aspect ratio does not change. Very large
   setups (5K, 8K, or three or more 4K monitors) lose some sharpness.
-- **Fedora trust store.** On Fedora, the updater checks the NEPTUN
-  certificate against the system CA file `/etc/ssl/certs/ca-certificates.crt`,
-  not the p11-kit trust store, to use less CPU time. `update-ca-trust` writes
-  that file, so run it after you change the system trust.
+- **Trust store.** The updater checks the NEPTUN certificate against the
+  system CA file `/etc/ssl/certs/ca-certificates.crt`. On Debian and Ubuntu,
+  that is the default trust store. On Fedora, it replaces the p11-kit trust
+  store, to use less CPU time. `update-ca-trust` writes that file, so run it
+  after you change the system trust. If the file is missing or empty, the
+  updater uses the default trust store.
 - **Language.** The text on the picture is in Ukrainian only.
 
 ### Resource use
@@ -318,7 +321,8 @@ The output goes to `tests/gnome/out/<image>-<scenario>/`.
 
 ### Leak checks
 
-The 1,000-run checks use a local fixture server, not NEPTUN. First, download
+The 1,000-run checks use a local fixture server, not NEPTUN. They need `curl`
+and GNU `time` (`/usr/bin/time`). First, download
 the NEPTUN files once into `tests/leak/.cache/`. Git ignores this folder.
 Do not commit these files.
 

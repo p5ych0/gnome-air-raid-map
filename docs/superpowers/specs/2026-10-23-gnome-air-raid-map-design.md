@@ -1,8 +1,8 @@
 # GNOME Air Raid Map: design
 
 - Date: 2026-10-23
-- Status: complete, waiting for owner approval
-- Repository: `p5ych0/gnome-air-raid-map` (not created on GitHub yet)
+- Status: complete, approved by the owner on 2026-10-23
+- Repository: `p5ych0/gnome-air-raid-map` (public)
 - Local folder: `~/Work/gnome-air-raid-map`
 - Reference project: `p5ych0/plasma-air-raid-map` 0.2.2, local folder `~/Work/map`
 
