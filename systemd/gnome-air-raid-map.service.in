@@ -7,6 +7,8 @@ OnFailure=gnome-air-raid-map-failed.service
 Type=oneshot
 ExecStart=@GJS@ -m @APPDIR@/updater/main.js
 MemoryMax=300M
+# No swap: with swap on, the kernel moves memory above MemoryMax to swap and the run continues.
+MemorySwapMax=0
 TimeoutStartSec=25s
 # For Type=oneshot, systemd counts SIGTERM as a failure. Then an uninstall or a
 # logout during a run would start the failure unit (OnFailure=), and the banner

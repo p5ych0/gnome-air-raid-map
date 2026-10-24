@@ -312,9 +312,11 @@ check "step 1: the known wallpaper is set" keys_are "${KNOWN[@]}"
 check "step 2: install.sh exits 0" install_run install-1
 check "step 3: the three units exist" all_exist "${UNITS[@]/#/$UNITDIR/}"
 check "step 3: no @...@ value is left in the units" no_placeholders
-sed 's/^/#   /' "$UNITDIR/$APP.service" "$UNITDIR/$APP-failed.service" | grep -E '^#   (ExecStart|OnFailure|SuccessExitStatus)='
+sed 's/^/#   /' "$UNITDIR/$APP.service" "$UNITDIR/$APP-failed.service" | grep -E '^#   (ExecStart|OnFailure|SuccessExitStatus|Memory[A-Za-z]*)='
 check "step 3: a stop of the service (SIGTERM) is a clean exit, not a failure" \
     grep -qx 'SuccessExitStatus=SIGTERM' "$UNITDIR/$APP.service"
+check "step 3: the service may not use swap, so MemoryMax=300M is a hard limit" \
+    grep -qx 'MemorySwapMax=0' "$UNITDIR/$APP.service"
 check "step 3: the banner is a 1200x360 PNG" png_size "$APPDIR/banner.png" 1200 360
 check "step 3: the saved wallpaper has the known values" saved_known
 cp "$STATEDIR/previous-wallpaper" "$OUT/previous-wallpaper"
