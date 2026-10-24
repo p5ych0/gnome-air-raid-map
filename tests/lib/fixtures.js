@@ -2,12 +2,17 @@
 // Synthetic map data from the Plasma project's tests/preview-threats.qml.
 import {prepareGeometry, parseSnapshot, parseThreats} from '../../core/mapdata.js';
 
-// One square region, used as the oblasts and as the raions.
-export function syntheticGeometry() {
-    const oblasts = prepareGeometry({type: 'FeatureCollection', features: [{
+// The GeoJSON of one square region, as a server sends it.
+export function syntheticCollection() {
+    return {type: 'FeatureCollection', features: [{
         properties: {key: 'test', region: 'SYNTHETIC TEST DATA'},
         geometry: {type: 'Polygon', coordinates: [[[22, 44], [40, 44], [40, 52], [22, 52], [22, 44]]]},
-    }]});
+    }]};
+}
+
+// One square region, used as the oblasts and as the raions.
+export function syntheticGeometry() {
+    const oblasts = prepareGeometry(syntheticCollection());
     return {oblasts, raions: oblasts};
 }
 

@@ -1,0 +1,18 @@
+# One updater run (spec 5.7). install.sh replaces the @...@ values.
+[Unit]
+Description=Air raid map wallpaper update
+OnFailure=gnome-air-raid-map-failed.service
+
+[Service]
+Type=oneshot
+ExecStart=@GJS@ -m @APPDIR@/updater/main.js
+MemoryMax=300M
+# No swap: with swap on, the kernel moves memory above MemoryMax to swap and the run continues.
+MemorySwapMax=0
+TimeoutStartSec=25s
+# For Type=oneshot, systemd counts SIGTERM as a failure. Then an uninstall or a
+# logout during a run would start the failure unit (OnFailure=), and the banner
+# could replace the restored wallpaper. With this line, an explicit stop is a
+# clean exit. A start timeout still fails: systemd records the timeout before it
+# sends SIGTERM. A kill at MemoryMax still fails: it uses SIGKILL.
+SuccessExitStatus=SIGTERM

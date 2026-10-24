@@ -112,7 +112,9 @@ function serveDirectory(port, dir) {
     const file = name => GLib.build_filenamev([dir, name]);
     let flip = false;
     requestedPort = port;
-    startServer({
+    // Keep the handle until the loop ends: without a reference, the garbage
+    // collector frees the Soup.Server, and the port closes after some requests.
+    const server = startServer({
         '/oblasts.geojson': () => ({body: readFile(file('oblasts.geojson'))}),
         '/raions.geojson': () => ({body: readFile(file('raions.geojson'))}),
         '/api/v1/threats': () => ({body: readFile(file('threats.json'))}),
@@ -122,6 +124,7 @@ function serveDirectory(port, dir) {
         },
     });
     GLib.MainLoop.new(null, false).run();
+    server.stop();
 }
 
 if (System.programInvocationName.endsWith('fixture-server.js')) {

@@ -5,19 +5,24 @@ import Gio from 'gi://Gio';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import {parseColor} from '../../core/canvas.js';
 
+// Reads the picture file once and returns (x, y) -> [r, g, b]. Use it to sample many pixels.
+export function pixelReaderFromPath(path) {
+    const pixbuf = GdkPixbuf.Pixbuf.new_from_file(path);
+    const pixels = pixbuf.get_pixels();
+    const stride = pixbuf.get_rowstride(), channels = pixbuf.get_n_channels();
+    return (x, y) => {
+        const i = y * stride + x * channels;
+        return [pixels[i], pixels[i + 1], pixels[i + 2]];
+    };
+}
+
 // Reads the surface once and returns (x, y) -> [r, g, b]. Use it to sample many pixels.
 export function pixelReader(surface) {
     const dir = GLib.dir_make_tmp('airmap-px-XXXXXX');
     const path = `${dir}/surface.png`;
     try {
         surface.writeToPNG(path);
-        const pixbuf = GdkPixbuf.Pixbuf.new_from_file(path);
-        const pixels = pixbuf.get_pixels();
-        const stride = pixbuf.get_rowstride(), channels = pixbuf.get_n_channels();
-        return (x, y) => {
-            const i = y * stride + x * channels;
-            return [pixels[i], pixels[i + 1], pixels[i + 2]];
-        };
+        return pixelReaderFromPath(path);
     } finally {
         try { Gio.File.new_for_path(path).delete(null); } catch (e) { /* already gone */ }
         try { Gio.File.new_for_path(dir).delete(null); } catch (e) { /* already gone */ }

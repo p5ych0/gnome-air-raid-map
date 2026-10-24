@@ -1,0 +1,13 @@
+# Starts gnome-air-raid-map.service at session start and 30 s after each run (spec 5.7).
+[Unit]
+Description=Air raid map wallpaper update every 30 seconds
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Timer]
+OnActiveSec=1s
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=graphical-session.target

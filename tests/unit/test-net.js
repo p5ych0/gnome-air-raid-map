@@ -74,4 +74,13 @@ test('invalid url is a failed request', async () => {
     await assertRequestError(getJson(createSession(), 'not a url'), /^Invalid URL$/);
 });
 
+// One run sends four requests to one host at the same time: two boundary files and two feeds.
+test('a session sends four requests to one host at the same time', async () => {
+    const routes = Object.fromEntries(['/1', '/2', '/3', '/4'].map(p => [p, {body: '{}', delayMs: 300}]));
+    const {server, base, session} = setup(routes);
+    await Promise.all(Object.keys(routes).map(p => getJson(session, base + p)));
+    assertEqual(server.maxWaiting, 4);
+    server.stop();
+});
+
 await run();

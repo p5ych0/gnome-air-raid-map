@@ -149,18 +149,26 @@ test('long region names stop at three lines', () => {
     }
 });
 
-test('text stays inside the 64 px margins', () => {
+// Spec 6.1: 64 px from each edge. On the left, the Ubuntu Dock covers x < 66, and x < 82
+// at its largest icon size (docs/decisions/2026-10-23-multi-monitor-mode.md), so the
+// text starts at 96.
+const LEFT = 96;
+
+test('text stays inside the margins, and right of the Ubuntu Dock', () => {
     const view = {statusLines: ['ДАНІ ЗАСТАРІЛИ', 'Загрози: оновлено 14:05 · 10 повідомл.'], alertsStale: true};
     for (const size of ['1920x1080@1', '3840x2160@2', '2560x1080@1', '1080x1920@1']) {
         const layout = pictureLayout(parseDisplayOverride(size));
         const {width: W, height: H, monitors: [{scale}]} = layout;
-        const m = 64 * scale;
+        const m = 64 * scale, left = LEFT * scale;
         // Without boundaries only text is drawn, so the margins must stay empty.
         const read = draw(view, layout, null);
         const blank = p => near(p, '#0e1722', 2);
-        for (const [x0, y0, x1, y1] of [[0, 0, W, m], [0, H - m, W, H], [0, m, m, H - m], [W - m, m, W, H - m]])
+        for (const [x0, y0, x1, y1] of [[0, 0, W, m], [0, H - m, W, H], [0, m, left, H - m], [W - m, m, W, H - m]])
             assertEqual(countIn(read, x0, y0, x1, y1, p => !blank(p)), 0, `${size}: ink in the margin ${[x0, y0, x1, y1]}`);
-        assertTrue(countIn(read, m, m, m + 40 * scale, m + 30 * scale, p => !blank(p)) > 0, `${size}: no title`);
+        assertTrue(countIn(read, left, m, left + 40 * scale, m + 30 * scale, p => !blank(p)) > 0, `${size}: no title`);
+        // The legend starts at the left edge of the text area.
+        assertTrue(countIn(read, left, H - m - 20 * scale, left + 10 * scale, H - m, p => !blank(p)) > 0,
+            `${size}: no legend at x ${left}`);
     }
 
     // Many three-line items must stop above the legend block, not run into the margin.
@@ -173,7 +181,7 @@ test('text stays inside the 64 px margins', () => {
         const {width: W, height: H} = layout;
         const read = draw(listView, layout, null);
         const blank = p => near(p, '#0e1722', 2);
-        for (const [x0, y0, x1, y1] of [[0, 0, W, 64], [0, H - 64, W, H], [0, 64, 64, H - 64], [W - 64, 64, W, H - 64]])
+        for (const [x0, y0, x1, y1] of [[0, 0, W, 64], [0, H - 64, W, H], [0, 64, LEFT, H - 64], [W - 64, 64, W, H - 64]])
             assertEqual(countIn(read, x0, y0, x1, y1, p => !blank(p)), 0, `${size} list: ink in the margin ${[x0, y0, x1, y1]}`);
         // From above the legend block down, the picture must be the same as without a list.
         const without = draw(emptyView, layout, null);
