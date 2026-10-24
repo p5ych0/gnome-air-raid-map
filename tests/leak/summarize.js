@@ -29,7 +29,8 @@
 //   (30 s after each GC probe), PSS and its anonymous part: the trend of the updater
 //   container minus the trend of the control, over the time after the warm-up, gives
 //   a growth of less than 1 % of the control PSS; the updater adds less than 1 % of
-//   one core.
+//   one core to the shell service with its children (the glycin image loaders). The
+//   CPU of the gnome-shell process alone is printed too.
 //
 // Exit status: 0 if every check passes, 1 if a check fails, 2 for a usage error.
 import GLib from 'gi://GLib';
@@ -324,7 +325,11 @@ function shellChecks(updater, control, span) {
     const addedCpu = (updater.cpu / updater.seconds - control.cpu / control.seconds) * 100;
     const addedGroupCpu = (updater.groupCpu / updater.seconds - control.groupCpu / control.seconds) * 100;
     print(`  CPU: ${fixed(addedCpu, 3)} % of one core (with the children of the shell: ${fixed(addedGroupCpu, 3)} %)`);
-    verdict(addedCpu < 1, `${updater.name}: gnome-shell: the updater adds less than 1 % of one core`);
+    // The verdict uses the shell service with its children: the Shell starts the glycin
+    // image loaders in its service to decode each new picture, so the updater causes
+    // that work too.
+    verdict(addedGroupCpu < 1, `${updater.name}: gnome-shell: the updater adds less than 1 % of one core ` +
+        `to the shell service with its children (${fixed(addedGroupCpu, 3)} %)`);
 }
 
 function soak(dir, expect) {
