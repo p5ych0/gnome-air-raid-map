@@ -225,6 +225,8 @@ The picture is in RAM for two reasons:
 **Requirement (from the owner): the picture uses the actual screen size and
 aspect ratio.** The map layout comes from the real size of each monitor. It
 never comes from a fixed size, and GNOME must not crop or stretch the map.
+This rule is for the map picture. The failure banner (section 5.7) has one
+exception on narrow monitors. Section 5.7 describes it.
 
 - **Monitor layout:** each run reads the current monitor layout from the
   `org.gnome.Mutter.DisplayConfig` D-Bus interface (`GetCurrentState`). For
@@ -256,21 +258,24 @@ never comes from a fixed size, and GNOME must not crop or stretch the map.
   guess a size.
 - **Settings:** `picture-uri` and `picture-uri-dark` point to the picture.
 - **Time labels (decision of the owner: A, with B as the fallback):**
-  - **A (default):** the corner shows "Оновлено HH:MM" (updated at), the
-    time of the last valid response. The picture changes once per minute
-    when the data does not change, and at most once per 30 seconds when the
-    data changes. The changing time shows the user that the map is live.
-  - **B (fallback):** the corner shows "Без змін з HH:MM" (no changes
-    since), the time of the last change in the data. The picture changes
-    only when the data or the stale state changes.
+  - **A (default):** the corner shows "Тривоги: оновлено HH:MM" and
+    "Загрози: оновлено HH:MM · N повідомл." (updated at). HH:MM is the
+    time of the last valid response of each feed. The picture changes once
+    per minute when the data does not change, and at most once per 30
+    seconds when the data changes. The changing time shows the user that
+    the map is live.
+  - **B (fallback):** the corner shows "Тривоги: без змін з HH:MM" and
+    "Загрози: без змін з HH:MM · N повідомл." (no changes since). HH:MM is
+    the time of the last change in the data of each feed. The picture
+    changes only when the data or the stale state changes.
   - **Gate:** check 5 of section 7.4 decides. If A fails that check, the
     builder switches to B and reports the measurements to the owner.
   - The stale rules of section 6.2 are the same in A and B.
 
 **Risk: mixed scales.** In `spanned` mode, Mutter multiplies the image size
-by the monitor scale but does not multiply the monitor offset. With two
-monitors at different scales, a monitor can show the wrong part of the
-picture. The builder must test these layouts in GNOME Shell:
+by the monitor scale. If it did not also multiply the monitor offset, a
+monitor could show the wrong part of the picture when two monitors have
+different scales. The builder must test these layouts in GNOME Shell:
 
 1. One monitor, 1920×1080, scale 1.
 2. One monitor, 3840×2160, scale 2.
@@ -283,6 +288,16 @@ stretched. All text is inside the margins of section 6.1. If layout 5 fails,
 the builder uses the fallback: `picture-options` is `zoom`, and the picture
 has the size and aspect ratio of the primary monitor. The README then states
 the limit for mixed-scale setups.
+
+**Result (Task 9): the fallback was not needed.** All five layouts passed on
+GNOME 50 (Fedora 44) and GNOME 46 (Ubuntu 24.04). Layout 5 passed in both
+layout modes of Mutter (logical and physical). Mutter multiplies the whole
+monitor rectangle by the monitor scale, the offset included, before it
+computes the picture area (`meta-background.c`). An earlier version of this
+section said that Mutter does not multiply the offset. That was wrong.
+`picture-options` stays `spanned` for all layouts, and the README states no
+limit for mixed-scale setups. See
+[`docs/decisions/2026-10-23-multi-monitor-mode.md`](../../decisions/2026-10-23-multi-monitor-mode.md).
 
 **Risk: picture reload.** GNOME reloads the picture after a
 `CHANGES_DONE_HINT` file event. An atomic rename (write to a temporary file,
@@ -302,6 +317,17 @@ database file to the disk each time. If method 3 is the only method that
 passes, the builder measures the bytes that dconf writes per day and
 reports the number to the owner before the release.
 
+**Result (Task 7): `rename`.** Methods 1 and 2 both passed 100 of 100
+updates on both images. Method 3 failed. The guess above was wrong: GLib
+sends `CHANGES_DONE_HINT` for a file that a rename replaces. The updater uses
+method 2, not method 1. The reason: when a run stops during a write, method 1
+shows an incomplete picture, and that breaks the rule "no black or empty
+frame". dconf wrote nothing during the updates of methods 1 and 2. When the
+settings do not point to the live picture (for example, after the failure
+banner), the updater writes the picture under a new file name. The reason:
+the Shell can keep an old copy of a file name that it showed before. See
+[`docs/decisions/2026-10-23-picture-reload-method.md`](../../decisions/2026-10-23-picture-reload-method.md).
+
 ### 5.7 Scheduling
 
 - A systemd user service runs one updater run (`Type=oneshot`).
@@ -315,12 +341,15 @@ reports the number to the owner before the release.
 **Failure banner (decision of the designer).** The service has `OnFailure=`
 set to a second unit. That unit only runs `gsettings`. It does not start
 GJS, Cairo, or Pango, so it cannot fail for the same reason as the updater.
-It sets three values:
+It sets these keys. It changes a key only when the key has another value:
 
 - `picture-uri` and `picture-uri-dark`: the failure banner.
-- `picture-options`: `centered`. GNOME shows the banner at its own size,
-  in the center of each monitor. It is never stretched or cropped, so the
-  monitor size and aspect ratio do not matter.
+- `picture-options`: `centered`. GNOME shows the banner at its own size
+  (1200×360), in the center of each monitor. GNOME never stretches it, so
+  the monitor size and aspect ratio do not matter. Exception: on a monitor
+  less than 1200 pixels wide, GNOME cuts the banner at its left and right
+  sides. On a portrait monitor 1080 pixels wide, GNOME cuts 60 pixels of
+  plain background on each side. The text stays fully visible.
 - `primary-color`: `#0e1722`, the map background color. The area around the
   banner has the same color.
 
@@ -338,14 +367,15 @@ Install (one command, for example `./install.sh`):
 1. Check that GJS, libsoup 3, Cairo, Pango, and a systemd user session are
    present. If one is missing, print the package name for the distribution
    and stop.
-2. Copy the program to `~/.local/share/gnome-air-raid-map/`.
+2. Copy the program to `~/.local/share/gnome-air-raid-map/`, and draw the
+   failure banner there (section 5.7).
 3. Copy the units to `~/.config/systemd/user/`.
 4. Save the current values of `picture-uri`, `picture-uri-dark`,
    `picture-options`, and `primary-color`.
-5. Draw the failure banner (section 5.7).
-6. Enable and start the timer.
+5. Enable and start the timer. Without a graphical session, only enable it.
+   The timer then starts at the next graphical login.
 
-Uninstall (`./install.sh --uninstall` or `./uninstall.sh`):
+Uninstall (`./install.sh --uninstall`):
 
 1. Stop and disable the timer.
 2. Put back the saved wallpaper values.
