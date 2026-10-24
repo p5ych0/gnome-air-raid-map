@@ -395,6 +395,8 @@ restore_step c-live
 since=$(date +%s)
 wait_idle
 check "d: install.sh --uninstall exits 0" install_run uninstall --uninstall
+# A run that the uninstall stopped can have started in the same second: count from the next second.
+after=$(($(date +%s) + 1))
 check "d: the four keys have the known values again" keys_are "${KNOWN[@]}"
 left=$(find "$TEST_HOME" "$TEST_RUNTIME" -name "*$APP*" 2> /dev/null)
 [ -z "$left" ] || sed 's/^/#   left: /' <<< "$left"
@@ -404,9 +406,21 @@ check "d: the program, cache, state and runtime folders are gone" \
 check "d: systemd has no unit file of the program" \
     test -z "$(user_systemctl list-unit-files --no-legend "$APP*")"
 check "d: the timer is not loaded" test "$(prop "$TIMER" LoadState)" = not-found
+# The journal read must work: it shows the stop of the timer by the uninstall.
+timer_stopped() {
+    local lines
+    lines=$(user_journal -q -o cat --since "@$since" -u "$TIMER") || { echo "#   journalctl failed"; return 1; }
+    grep -q "^Stopped $TIMER" <<< "$lines"
+}
+no_run_after() {
+    local lines
+    lines=$(user_journal -q -o cat --since "@$after" -u "$SERVICE") || { echo "#   journalctl failed"; return 1; }
+    [ -z "$lines" ] || sed 's/^/#   after the uninstall: /' <<< "$lines"
+    ! grep -q '^Starting ' <<< "$lines"
+}
 sleep 35
-check "d: no run in 35 s after the uninstall" \
-    test -z "$(user_journal -o cat --since "@$since" -u "$SERVICE" | grep -i 'starting')"
+check "d: the journal shows that the uninstall stopped the timer" timer_stopped
+check "d: no run in 35 s after the uninstall" no_run_after
 screenshot "$OUT/d-restored.png" || status=1
 check "d-restored.png shows the known wallpaper" \
     indented gjs -m /repo/tests/gnome/scenarios/centered.js "$OUT/d-restored.png" "$OUT/monitors.json" "$KNOWN_COLOR"
