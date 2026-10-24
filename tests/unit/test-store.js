@@ -4,7 +4,13 @@ import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertRejects} from '../lib/assert.js';
 import {removeTree} from '../lib/files.js';
 import {startServer} from '../lib/fixture-server.js';
+import {pixelReader} from '../lib/pixels.js';
+import {syntheticView} from '../lib/fixtures.js';
+import {prepareGeometry} from '../../core/mapdata.js';
+import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
+import {renderPicture} from '../../core/render.js';
 import {createSession} from '../../updater/net.js';
+import * as store from '../../updater/store.js';
 import {loadGeometry, readJson, writeJsonAtomic} from '../../updater/store.js';
 
 const STORE_URL = GLib.Uri.resolve_relative(import.meta.url, '../../updater/store.js', GLib.UriFlags.NONE);
@@ -217,6 +223,130 @@ test('metadata entries hold only the etag and the check time', () => withFixture
         raions: {etag: '"r1"', checkedAt: 4990000},
     });
 }));
+
+// The prepared boundaries (Task 11b): the projected geometry of each file, next to it,
+// for the version of the file. A run then does not parse and project the GeoJSON again.
+const preparedPath = (dir, name) => path(dir, `${name}.prepared`);
+const otherGeometry = () => prepareGeometry(JSON.parse(collection('region', 'other')));
+
+test('a load writes the prepared boundaries for the version of each file', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    assertDeepEqual(store.readPrepared?.(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o1'))),
+        prepareGeometry(JSON.parse(collection('region', 'o1'))));
+    assertDeepEqual(store.readPrepared?.(preparedPath(dir, 'raions'), sha256(collection('rayon', 'r1'))),
+        prepareGeometry(JSON.parse(collection('rayon', 'r1'))));
+}));
+
+test('a prepared entry for the version of the file is used', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    // A valid entry for the same version, with other content: the load must take it as it is.
+    store.writePrepared?.(preparedPath(dir, 'oblasts'), otherGeometry(), sha256(collection('region', 'o1')));
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertEqual(result.geometry.oblasts.regions[0].key, 'other');
+    assertEqual(result.version, version());
+    assertEqual(server.hits.get('/oblasts.geojson'), 1);
+}));
+
+test('a prepared entry for another version is rebuilt', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    store.writePrepared?.(preparedPath(dir, 'oblasts'), otherGeometry(), sha256(collection('region', 'old')));
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+    assertDeepEqual(store.readPrepared?.(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o1'))),
+        prepareGeometry(JSON.parse(collection('region', 'o1'))), 'the entry is not rebuilt');
+}));
+
+test('a changed boundary file rebuilds its prepared entry', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    GLib.file_set_contents(path(dir, 'oblasts.geojson'), collection('region', 'o2'));
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertEqual(result.geometry.oblasts.regions[0].key, 'o2');
+    assertTrue(store.readPrepared?.(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o2'))),
+        'no prepared entry for the new version');
+}));
+
+// Each damage gives an entry that must not be used: the load rebuilds it from the file.
+const changeByte = (bytes, index) => {
+    const copy = bytes.slice();
+    copy[index] ^= 0x01;
+    return copy;
+};
+const DAMAGE = {
+    'garbage': () => new TextEncoder().encode('not a prepared file'),
+    'empty': () => new Uint8Array(0),
+    'cut payload': bytes => bytes.slice(0, bytes.length - 8),
+    'extra payload': bytes => {
+        const longer = new Uint8Array(bytes.length + 16);
+        longer.set(bytes);
+        return longer;
+    },
+    'changed coordinate': bytes => changeByte(bytes, bytes.length - 12),
+    'changed header': bytes => changeByte(bytes, 80),
+    'changed checksum': bytes => changeByte(bytes, 3),
+};
+for (const [damage, change] of Object.entries(DAMAGE)) {
+    test(`a damaged prepared entry is rebuilt: ${damage}`, () => withFixture(async ({server, dir, session}) => {
+        await loadGeometry(session, server.base, dir, 1000000);
+        const file = preparedPath(dir, 'raions');
+        const [, bytes] = GLib.file_get_contents(file);
+        GLib.file_set_contents(file, change(bytes));
+        assertEqual(store.readPrepared?.(file, sha256(collection('rayon', 'r1'))), null, 'the damaged entry is read');
+        const result = await loadGeometry(session, server.base, dir, 1060000);
+        assertDeepEqual(result.geometry.raions, prepareGeometry(JSON.parse(collection('rayon', 'r1'))));
+        assertEqual(result.version, version());
+        assertTrue(store.readPrepared?.(file, sha256(collection('rayon', 'r1'))), 'the entry is not rebuilt');
+    }));
+}
+
+test('a prepared entry that cannot be written is not an error', () => withFixture(async ({server, dir, session}) => {
+    // A folder in place of the file: the entry can be neither read nor written.
+    GLib.mkdir_with_parents(preparedPath(dir, 'oblasts'), 0o755);
+    const first = await loadGeometry(session, server.base, dir, 1000000);
+    const again = await loadGeometry(session, server.base, dir, 1060000);
+    for (const result of [first, again]) {
+        assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+        assertEqual(result.version, version());
+    }
+}));
+
+// Polygons with holes, a MultiPolygon, Cyrillic labels and coordinates with many digits.
+function richCollection() {
+    const ring = (x0, y0, x1, y1) => [[x0, y0], [x1, y0 + 0.123456789012345], [x1, y1], [x0 + 1e-9, y1], [x0, y0]];
+    return {type: 'FeatureCollection', features: [
+        {properties: {key: 'київська', region: 'Київська область'}, geometry: {type: 'Polygon',
+            coordinates: [ring(29.1, 49.2, 31.7, 51.3), ring(30, 50, 30.5, 50.5).reverse()]}},
+        {properties: {key: 'м. київ', name: 'Київ'}, geometry: {type: 'MultiPolygon',
+            coordinates: [[ring(30.2, 50.3, 30.4, 50.5)], [ring(31.9, 46.1, 33.3, 47.7), ring(32, 46.5, 32.5, 47)]]}},
+        {properties: {key: 'крим', region: 'Автономна Республіка Крим'}, geometry: {type: 'Polygon',
+            coordinates: [ring(32.5, 44.4, 36.6, 46.2)]}},
+    ]};
+}
+
+test('prepared boundaries give the same geometry and the same picture', () => {
+    const dir = GLib.dir_make_tmp('air-raid-prepared-XXXXXX');
+    try {
+        const fresh = prepareGeometry(richCollection());
+        store.writePrepared?.(path(dir, 'x.prepared'), fresh, 'v1');
+        const loaded = store.readPrepared?.(path(dir, 'x.prepared'), 'v1');
+        assertDeepEqual(loaded, fresh);
+        const layout = pictureLayout(parseDisplayOverride('640x360@1'));
+        const pixels = geometry => {
+            const surface = renderPicture(layout, {oblasts: geometry, raions: geometry}, syntheticView({
+                alerts: {raions: {}, oblasts: {'@київська': 'red', '@крим': 'yellow'}, count: 2}}));
+            const read = pixelReader(surface);
+            surface.finish();
+            return read;
+        };
+        const [a, b] = [pixels(fresh), pixels(loaded)];
+        let differ = 0;
+        for (let y = 0; y < layout.height; y++)
+            for (let x = 0; x < layout.width; x++)
+                if (a(x, y).some((v, i) => v !== b(x, y)[i])) ++differ;
+        assertEqual(differ, 0, 'pixels that differ');
+    } finally {
+        removeTree(dir);
+    }
+});
 
 test('offline without cache rejects', () => withFixture(async ({server, dir, session}) => {
     server.stop();
