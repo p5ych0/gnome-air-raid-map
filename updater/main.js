@@ -29,13 +29,14 @@ function choice(variable, allowed) {
 }
 
 async function main() {
+    const base = apiBase();
     const result = await runOnce({
-        session: createSession(),
+        session: createSession({base}),
         settings: backgroundSettings(),
         display: currentDisplay,
         paths: appPaths(),
         now: Date.now(),
-        base: apiBase(),
+        base,
         labelMode: choice('AIR_RAID_MAP_LABEL_MODE', ['updated', 'unchanged']),
         reloadMethod: DEFAULT_RELOAD_METHOD,
         pictureOptions: choice('AIR_RAID_MAP_PICTURE_OPTIONS', ['spanned', 'zoom']),
