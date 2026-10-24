@@ -21,7 +21,10 @@
 # keys, and does not leave a deleted picture; 13 lose the saved wallpaper while
 # the wallpaper is not a picture of the program: the uninstall leaves the keys;
 # 14 make the copy of a second install fail: the old program, its failure script
-# and its live picture stay, the timer starts again, and no staging folder is left.
+# and its live picture stay, the timer starts again, and no staging folder is left;
+# 15 make the swap fail between its two renames: the old program is moved back, the
+# timer starts again, no wallpaper key points to a missing file, and the next run
+# works. Step 8 also checks that the uninstall deletes the staging folders.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -396,13 +399,16 @@ check "step 7: systemctl got stop of the timer and the service before daemon-rel
     "systemctl --user stop $APP.timer" "systemctl --user stop $APP.service" 'systemctl --user daemon-reload' \
     'systemctl --user is-active --quiet graphical-session.target' "systemctl --user enable --now $APP.timer"
 
-# Step 8: uninstall.
+# Step 8: uninstall. Staging folders that an install left (after a kill or a power
+# loss) are deleted too.
+mkdir -p "$APPDIR.new" "$APPDIR.old"
 : > "$OUT/calls.log"
 from=$(shell_log_lines)
 check "step 8: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall --uninstall
 check "step 8: the four keys have the known values again" keys_are "${KNOWN[@]}"
 check "step 8: the program, cache, state and runtime folders are gone" \
     none_exist "$APPDIR" "$CACHEDIR" "$STATEDIR" "$RUNDIR"
+check "step 8: the staging folders $APP.new and $APP.old are gone" none_exist "$APPDIR.new" "$APPDIR.old"
 check "step 8: the unit files are gone" none_exist "${UNITS[@]/#/$UNITDIR/}"
 # A run that fails during the uninstall queues the failure unit (OnFailure=). Its
 # gsettings calls must not come after the restore: stop the timer, then the
@@ -466,7 +472,7 @@ check "step 10: the program, cache, state and runtime folders are gone" \
 
 # Step 11: a second install fails after it stopped the timer. The failure is a
 # folder in the place of the file of the timer unit: the redirection of sed fails
-# after the old program was deleted. The EXIT trap of install.sh must start the timer
+# after the new program was swapped in. The EXIT trap of install.sh must start the timer
 # again and show the banner (the stub gsettings is first in PATH, so that install.sh
 # uses it for the failure script).
 check "step 11: a clean install.sh exits 0" install_run install-5
@@ -560,6 +566,53 @@ check "step 14: a clean install.sh exits 0 after the failed one" install_run ins
 check "step 14: no staging folder is left after the install" none_exist "$APPDIR.new" "$APPDIR.old"
 check "step 14: the installed program is complete" \
     all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
+
+# Step 15: the swap fails between its two renames, as on a full btrfs (rename can fail
+# with ENOSPC) or after a signal: the old program is already moved to $APPDIR.old and
+# the new program is complete. The trap must move the old program back. A stub mv
+# fails when its source is the staging folder and runs the real mv for all other calls.
+FAILMV=$XDG_RUNTIME_DIR/stub-failing-mv
+mkdir -p "$FAILMV"
+printf '%s\n' '#!/bin/sh' '# Fail the rename of the new program into place.' \
+    'for argument; do' \
+    "    if [ \"\$argument\" = '$APPDIR.new' ]; then echo \"mv: cannot move: No space left on device\" >&2; exit 1; fi" \
+    'done' \
+    "exec '$(command -v mv)' \"\$@\"" > "$FAILMV/mv"
+chmod +x "$FAILMV/mv"
+
+# with_failing_mv <command ...>: runs the command with the stub mv first in PATH.
+with_failing_mv() {
+    PATH="$FAILMV:$PATH" "$@"
+}
+
+# keys_point_to_files: the files of picture-uri and picture-uri-dark exist.
+keys_point_to_files() {
+    local key value result=0
+    for key in picture-uri picture-uri-dark; do
+        value=$(gsettings get "$SCHEMA" "$key")
+        value=${value#\'file://}
+        value=${value%\'}
+        echo "#   $key file: $value"
+        [ -f "$value" ] || result=1
+    done
+    return $result
+}
+
+check "step 15: a clean install.sh exits 0" install_run install-11
+touch "$STUB/active/$APP.timer"
+: > "$OUT/calls.log"
+check "step 15: install.sh fails when the swap fails" not with_gsettings_stub with_failing_mv install_run install-12
+sed 's/^/#   /' "$OUT/calls.log"
+check "step 15: the old program is moved back and is complete" \
+    all_exist "$APPDIR/updater/main.js" "$APPDIR/updater/failed.sh" "$APPDIR/core" "$APPDIR/banner.png" "$APPDIR/LICENSE"
+check "step 15: the failed install left no staging folder" none_exist "$APPDIR.new" "$APPDIR.old"
+check "step 15: systemctl got stop $APP.timer, then start $APP.timer" \
+    call_order "systemctl --user stop $APP.timer" "systemctl --user start $APP.timer"
+check "step 15: no wallpaper key points to a missing file" keys_point_to_files
+check "step 15: the old program is intact, so the failure script did not run" \
+    not grep -q '^gsettings set ' "$OUT/calls.log"
+check "step 15: the service still runs and sets the live picture" run_unit "$APP.service" service-5
+check "step 15: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
 
 echo "# install: $status (0: every check passed)"
 exit $status

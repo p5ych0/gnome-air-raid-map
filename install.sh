@@ -107,8 +107,8 @@ save_wallpaper() {
 NEW=$APPDIR.new
 OLD=$APPDIR.old
 # Set by install_app. timer_stopped: the install stopped the timer, and the timer
-# does not run again. program_broken: the install replaced the old program, and the
-# new program and units are not complete.
+# does not run again. program_broken: the install started to replace the old
+# program, and the program in APPDIR or the units are not complete.
 timer_stopped=0
 program_broken=0
 gsettings=
@@ -118,22 +118,30 @@ banner_uri=
 # last map would stay on the screen with its old time and no marking. So start the
 # timer again: if the program is broken, its runs fail and the failure unit shows
 # the banner. Show the banner now, if a failure script is still there.
+# If the swap stopped between its two renames, APPDIR is absent and OLD holds the
+# old program, which is complete: move it back first.
 recover_failed_install() {
-    local status=$? dir shown=0
+    local status=$? shown=0
     trap - EXIT
-    [ "$status" -eq 0 ] || rm -rf "$NEW"
+    if [ "$status" -ne 0 ]; then
+        rm -rf "$NEW"
+        if { [ -e "$OLD" ] || [ -L "$OLD" ]; } && [ ! -e "$APPDIR" ] && [ ! -L "$APPDIR" ]; then
+            if mv -T "$OLD" "$APPDIR"; then
+                program_broken=0
+            else
+                warn "cannot move $OLD back to $APPDIR"
+            fi
+        fi
+    fi
     if [ "$status" -ne 0 ] && [ "$timer_stopped" -eq 1 ]; then
         warn "the install failed: starting $TIMER again"
         systemctl --user start "$TIMER" || warn "cannot start $TIMER: run $0 again"
         if [ "$program_broken" -eq 1 ]; then
-            for dir in "$APPDIR" "$OLD"; do
-                if [ -f "$dir/updater/failed.sh" ] && [ -f "$dir/banner.png" ]; then
-                    shown=1
-                    /bin/sh "$dir/updater/failed.sh" "$gsettings" "$banner_uri" ||
-                        warn "cannot show the failure banner"
-                    break
-                fi
-            done
+            if [ -f "$APPDIR/updater/failed.sh" ] && [ -f "$APPDIR/banner.png" ]; then
+                shown=1
+                /bin/sh "$APPDIR/updater/failed.sh" "$gsettings" "$banner_uri" ||
+                    warn "cannot show the failure banner"
+            fi
             if [ "$shown" -eq 0 ]; then
                 warn "the program in $APPDIR is not complete: run $0 again to install it"
             fi
@@ -174,11 +182,12 @@ install_app() {
     cp -R "$SOURCE/core" "$SOURCE/updater" "$NEW/"
     cp "$SOURCE/LICENSE" "$NEW/"
     "$gjs" -m "$NEW/updater/banner.js" "$NEW/banner.png"
-    program_broken=1
-    if [ -e "$APPDIR" ]; then
-        mv "$APPDIR" "$OLD"
+    if [ -e "$APPDIR" ] || [ -L "$APPDIR" ]; then
+        mv -T "$APPDIR" "$OLD"
     fi
-    mv "$NEW" "$APPDIR"
+    # From here the program in APPDIR is not complete until the next rename is done.
+    program_broken=1
+    mv -T "$NEW" "$APPDIR"
     rm -rf "$OLD"
 
     # 2. The units. In a unit file, %% is one %: the banner URI escapes some
@@ -290,7 +299,7 @@ uninstall_app() {
     for unit in "${UNITS[@]}"; do
         rm -f "$UNITDIR/$unit"
     done
-    rm -rf "$APPDIR" "$CACHEDIR"
+    rm -rf "$APPDIR" "$NEW" "$OLD" "$CACHEDIR"
     if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
         rm -rf "$XDG_RUNTIME_DIR/$APP"
     fi
