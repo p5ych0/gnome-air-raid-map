@@ -380,6 +380,60 @@ for (const [damage, change] of Object.entries(DAMAGE)) {
     }));
 }
 
+// The checks behind the checksum: each change gives an entry with a valid checksum, but
+// another format or a wrong shape. The raions entry has one region with one ring of 5 points.
+test('a prepared entry that is written again with no change is used', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    const file = preparedPath(dir, 'raions');
+    writeEntry(file, readEntry(file));
+    assertDeepEqual(readPrepared(file, sha256(collection('rayon', 'r1'))),
+        prepareGeometry(JSON.parse(collection('rayon', 'r1'))));
+}));
+
+const SHAPE = {
+    'another format': entry => {
+        entry.header.format = 'gnome-air-raid-map prepared geometry 0';
+    },
+    // The entry of a computer with the other byte order.
+    'another byte order': entry => {
+        entry.header.littleEndian = entry.littleEndian = !entry.littleEndian;
+    },
+    // A second region with the key, the label and the points of the first.
+    'a duplicate key': entry => {
+        entry.header.regions.push(entry.header.regions[0]);
+        entry.numbers.push(...entry.numbers.slice(4));
+    },
+    'a ring of 3 points': entry => {
+        entry.header.regions[0].rings[0][0] = 3;
+        entry.numbers.splice(entry.numbers.length - 4);
+    },
+    'more doubles': entry => {
+        entry.numbers.push(0, 0);
+    },
+    'fewer doubles': entry => {
+        entry.numbers.splice(entry.numbers.length - 2);
+    },
+    // The reader must stop before it makes the points of such a ring.
+    'a ring longer than all doubles': entry => {
+        entry.header.regions[0].rings[0][0] = 2 ** 31 - 1;
+    },
+};
+for (const [shape, change] of Object.entries(SHAPE)) {
+    test(`a prepared entry with a valid checksum is rebuilt: ${shape}`, () => withFixture(async ({server, dir, session}) => {
+        await loadGeometry(session, server.base, dir, 1000000);
+        const file = preparedPath(dir, 'raions');
+        const entry = readEntry(file);
+        change(entry);
+        writeEntry(file, entry);
+        assertEqual(readPrepared(file, sha256(collection('rayon', 'r1'))), null, 'the entry is read');
+        const result = await loadGeometry(session, server.base, dir, 1060000);
+        assertDeepEqual(result.geometry.raions, prepareGeometry(JSON.parse(collection('rayon', 'r1'))));
+        assertEqual(result.version, version());
+        assertDeepEqual(readPrepared(file, sha256(collection('rayon', 'r1'))),
+            prepareGeometry(JSON.parse(collection('rayon', 'r1'))), 'the entry is not rebuilt');
+    }));
+}
+
 test('a prepared entry that cannot be written is not an error', () => withFixture(async ({server, dir, session}) => {
     // A folder in place of the file: the entry can be neither read nor written.
     GLib.mkdir_with_parents(preparedPath(dir, 'oblasts'), 0o755);
