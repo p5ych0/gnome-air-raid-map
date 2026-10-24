@@ -115,7 +115,11 @@ test('an http session and a session without a usable CA file keep the trust stor
 
 // In a new process: a local TLS server with the test certificate, and one request with
 // the CA file `anchors`. Prints the request result and whether the process loaded the
-// p11-kit trust module (/proc/self/maps).
+// p11-kit trust module (/proc/self/maps). The process has a server and a client in one
+// main loop: on GJS 1.80 such a process can wait forever (#7). So timeout stops it after
+// 30 s. A JS timer in the process is not enough: GJS can refuse JS callbacks during a
+// garbage collection.
+const TLS_PROCESS_LIMIT_S = 30;
 function tlsRequestIn(anchors) {
     const script = `
         imports.gi.versions.Soup = '3.0';
@@ -136,8 +140,12 @@ function tlsRequestIn(anchors) {
         const maps = new TextDecoder().decode(GLib.file_get_contents('/proc/self/maps')[1]);
         print(JSON.stringify({...result, p11KitTrust: maps.includes('p11-kit-trust')}));`;
     const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.STDOUT_PIPE});
-    const [, stdout] = launcher.spawnv(['gjs', '-c', script, GLib.build_filenamev([FIXTURES, 'test-tls-server.pem']),
-        anchors, NET_URL]).communicate_utf8(null, null);
+    const process = launcher.spawnv(['timeout', `${TLS_PROCESS_LIMIT_S}`, 'gjs', '-c', script,
+        GLib.build_filenamev([FIXTURES, 'test-tls-server.pem']), anchors, NET_URL]);
+    const [, stdout] = process.communicate_utf8(null, null);
+    // timeout exits 124 when the time limit stops the process.
+    if (process.get_exit_status() === 124)
+        throw new Error(`the TLS process did not finish in ${TLS_PROCESS_LIMIT_S} s`);
     return JSON.parse(stdout);
 }
 
