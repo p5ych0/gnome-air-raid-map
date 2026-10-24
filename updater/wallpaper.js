@@ -20,6 +20,20 @@ export function showsPicture(settings, uri) {
     return settings.get_string('picture-uri') === uri && settings.get_string('picture-uri-dark') === uri;
 }
 
+// Returns the [key, value] pairs that must change for the wallpaper to show uri with
+// picture-options `options`. Throws if a key that must change is
+// locked. In delay-apply mode set_string accepts every key, and apply() drops a locked
+// key without an error, so the check must come first. Changes nothing.
+export function checkLive(settings, uri, options = 'spanned') {
+    const values = {'picture-uri': uri, 'picture-uri-dark': uri, 'picture-options': options};
+    const changes = Object.entries(values).filter(([key, value]) => settings.get_string(key) !== value);
+    for (const [key] of changes) {
+        if (!settings.is_writable(key))
+            throw new Error(`Cannot set the wallpaper: ${key} is not writable`);
+    }
+    return changes;
+}
+
 // Points the wallpaper to uri with picture-options `options`. Writes only the keys
 // that differ, in one change: when picture-uri and picture-uri-dark change in two
 // writes, GNOME Shell starts to load the first picture and then destroys it
@@ -27,15 +41,8 @@ export function showsPicture(settings, uri) {
 // picture back after the failure banner. Puts `settings` in delay-apply mode.
 // Returns true if it changed a key. Throws if a key that must change is locked.
 export function applyLive(settings, uri, options = 'spanned') {
-    const values = {'picture-uri': uri, 'picture-uri-dark': uri, 'picture-options': options};
-    const changes = Object.entries(values).filter(([key, value]) => settings.get_string(key) !== value);
+    const changes = checkLive(settings, uri, options);
     if (changes.length === 0) return false;
-    // In delay-apply mode set_string accepts every key, and apply() drops a locked key
-    // without an error. So check first.
-    for (const [key] of changes) {
-        if (!settings.is_writable(key))
-            throw new Error(`Cannot set the wallpaper: ${key} is not writable`);
-    }
     settings.delay();
     for (const [key, value] of changes)
         settings.set_string(key, value);

@@ -7,7 +7,7 @@ import {renderPicture} from '../core/render.js';
 import {acceptAlerts, acceptThreats, buildView, emptyFeed, failFeed, renderKey} from '../core/view.js';
 import {getJson} from './net.js';
 import {loadGeometry, readJson, writeJsonAtomic} from './store.js';
-import {applyLive, showsPicture} from './wallpaper.js';
+import {applyLive, checkLive, showsPicture} from './wallpaper.js';
 import {DEFAULT_RELOAD_METHOD, removeFile, renameFile, writePicture} from './writer.js';
 
 const STATE_VERSION = 1;
@@ -152,17 +152,23 @@ export async function runOnce({session, settings, display, paths, now, base,
     // The picture on screen now: the sweeps keep it until the Shell has the new one.
     const onScreen = ['picture-uri', 'picture-uri-dark'].map(key => onScreenPath(settings.get_string(key)));
     const showsPrevious = previous !== '' && showsPicture(settings, GLib.filename_to_uri(previous, null));
-    // One key shows previous and the other does not: the wallpaper must move to a new
-    // file name, and a rename of previous would leave the first key on a missing file
-    // if the settings then fail. So draw a new picture and keep previous.
     const drew = key !== state.renderKey || previous === '' ||
-        !GLib.file_test(previous, GLib.FileTest.IS_REGULAR) ||
-        (!showsPrevious && onScreen.includes(previous));
+        !GLib.file_test(previous, GLib.FileTest.IS_REGULAR);
+    // One key shows previous, the other key does not, and the data is the same: keep the
+    // file and point the other key to it. This is safe for the Shell cache: the Shell can
+    // keep an old copy of a file name only if the file changed while the Shell did not
+    // watch it. The updater writes a file in place only when both keys show it, and
+    // otherwise writes under a new name. So the file that a key shows still has the
+    // content that the Shell has for it.
+    const keepsPrevious = !showsPrevious && !drew && onScreen.includes(previous);
     const draw = name => writePicture(renderPicture(layout, geometry, view), dir, reloadMethod, name);
     let picture = previous;
     // The new file name comes before the sweep, so that the run cannot take the name of a
     // file that the sweep deletes.
-    const path = showsPrevious ? '' : newPicturePath(dir, now);
+    const path = showsPrevious || keepsPrevious ? '' : newPicturePath(dir, now);
+    // Check the keys before the run makes, renames or deletes a file: a run that cannot
+    // set the wallpaper changes no file.
+    checkLive(settings, GLib.filename_to_uri(path === '' ? previous : path, null), pictureOptions);
     // Earlier runs that were killed can have left files: delete them before this run
     // makes new ones. A run that draws keeps only the files on screen: the saved picture
     // that no key shows goes too, so a write starts with the on-screen files only. A run
@@ -172,7 +178,7 @@ export async function runOnce({session, settings, display, paths, now, base,
         if (showsPrevious) {
             // The Shell watches the file that it shows, so an update keeps the name.
             if (drew) picture = draw(GLib.path_get_basename(previous));
-        } else {
+        } else if (!keepsPrevious) {
             // The wallpaper must move back to the live picture: after the failure banner,
             // at the first run, or after a change by the user. Use a new file name.
             if (drew) {

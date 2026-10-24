@@ -352,8 +352,10 @@ test('a locked wallpaper is a run error', () => withRun(async ({dir, once}) => {
     await assertLocked(once({settings: lockedSettings(dir)}));
 }));
 
+// The folder does not exist before the first file: a run that fails before it writes leaves none.
 const runtimeFiles = paths => {
     const names = [];
+    if (!GLib.file_test(paths.runtimeDir, GLib.FileTest.IS_DIR)) return names;
     const e = Gio.File.new_for_path(paths.runtimeDir).enumerate_children('standard::name', 0, null);
     for (let i = e.next_file(null); i; i = e.next_file(null)) names.push(i.get_name());
     return names.sort();
@@ -382,7 +384,7 @@ test('leftovers of a killed run are removed', () => withRun(async ({paths, setti
 
 // A run with unchanged data that cannot move the wallpaper must not touch a file that a
 // key still shows: picture-uri-dark is locked and shows another file, picture-uri
-// shows the live picture A. The run draws a new picture and fails on the locked key.
+// shows the live picture A. The run checks the keys first and fails on the locked key.
 test('a locked key keeps the picture that the other key still shows', () =>
     withRun(async ({backend, paths, settings, once}) => {
         const first = await once();
@@ -402,51 +404,86 @@ test('a locked key keeps the picture that the other key still shows', () =>
         assertTrue(pictureFiles(paths).length <= 2, pictureFiles(paths).join(' '));
     }));
 
-// The state of a run that failed on a locked key: the saved picture B is one that no key
-// shows, picture-uri still shows A, and picture-uri-dark shows another file. Returns
-// {a, b}, the paths of A and B.
-async function stateWithOffScreenSavedPicture({backend, settings, paths, once}) {
+// The state of the failure banner: run 1 draws A and sets both keys, then both keys
+// move to a file outside the folder. A is the saved picture that no key shows.
+// Returns the path of A.
+async function stateWithBanner({backend, once}) {
     const first = await once();
-    setWallpaper(backend, first.uri, 'spanned');
-    Gio.Settings.new_with_backend(SCHEMA, backend).set_string('picture-uri-dark', 'file:///other.png');
-    Gio.Settings.sync();
-    const locked = {
-        get_string: key => settings.get_string(key),
-        is_writable: key => key !== 'picture-uri-dark',
-        delay() {}, set_string() {}, apply() {},
-    };
-    await assertRejects(once({settings: locked, now: now + 20000}), /is not writable$/);
-    return {a: pathOf(first.uri), b: pathOf(pictureUri(paths, now + 20000))};
+    showBanner(backend);
+    return pathOf(first.uri);
 }
 
 // A run that draws writes its temporary file next to the pictures that the keys show.
-// The saved picture B that no key shows must be gone before the write starts: after a
-// kill during the write, the folder then holds the picture that picture-uri shows and
-// the new file. An unknown reload method makes writePicture throw before it makes a file.
+// The saved picture A that no key shows must be gone before the write starts: after a
+// kill during the write, the folder then holds only the new file. An unknown reload
+// method makes writePicture throw before it makes a file.
 test('a run that draws deletes the saved picture that no key shows before it writes', () =>
     withRun(async context => {
         const {server, paths} = context;
-        const {a, b} = await stateWithOffScreenSavedPicture(context);
-        assertTrue(GLib.file_test(b, GLib.FileTest.EXISTS), 'the failed run left no saved picture');
+        const a = await stateWithBanner(context);
+        assertTrue(GLib.file_test(a, GLib.FileTest.EXISTS), 'run 1 left no saved picture');
         server.setRoute('/api/v1/alerts', {body: JSON.stringify({oblasts: [], raions: []})});
         await assertRejects(context.once({now: now + 40000, reloadMethod: 'none'}), /^Unknown reload method: none$/);
-        assertTrue(GLib.file_test(a, GLib.FileTest.EXISTS), 'the picture that picture-uri shows was deleted');
-        assertTrue(!GLib.file_test(b, GLib.FileTest.EXISTS), 'the saved picture that no key shows is still there');
-        assertDeepEqual(pictureFiles(paths), [GLib.path_get_basename(a)]);
+        assertTrue(!GLib.file_test(a, GLib.FileTest.EXISTS), 'the saved picture that no key shows is still there');
+        assertDeepEqual(pictureFiles(paths), []);
     }));
 
-// The sweep deletes B before the write. If the run chose the name of its new picture
-// after the sweep, it could take B's name, and the Shell can have an old copy of that
+// The sweep deletes A before the write. If the run chose the name of its new picture
+// after the sweep, it could take A's name, and the Shell can have an old copy of that
 // name (docs/decisions/2026-10-23-picture-reload-method.md).
 test('the new picture never takes the name of a file that the sweep deletes', () =>
     withRun(async context => {
         const {server} = context;
-        const {b} = await stateWithOffScreenSavedPicture(context);
+        const a = await stateWithBanner(context);
         server.setRoute('/api/v1/alerts', {body: JSON.stringify({oblasts: [], raions: []})});
-        // The same time as the run that made B, and other data.
-        const result = await context.once({now: now + 20000});
+        // The same time as run 1, and other data.
+        const result = await context.once();
         assertTrue(result.drew, 'the run did not draw');
-        assertTrue(pathOf(result.uri) !== b, `the new picture took the name ${b}`);
+        assertTrue(pathOf(result.uri) !== a, `the new picture took the name ${a}`);
+    }));
+
+// The state of two keys on two files of the runtime folder, as an outside change makes
+// it: picture-uri shows the saved picture A, picture-uri-dark shows B. Returns {a, b}.
+async function stateWithSplitKeys({backend, paths, once}) {
+    const first = await once();
+    const b = `${paths.runtimeDir}/picture-999.png`;
+    GLib.file_set_contents(b, 'x');
+    Gio.Settings.new_with_backend(SCHEMA, backend).set_string('picture-uri-dark', GLib.filename_to_uri(b, null));
+    Gio.Settings.sync();
+    return {a: pathOf(first.uri), b};
+}
+
+test('a split pair of keys on the saved picture moves to it without a draw', () =>
+    withRun(async context => {
+        const {paths, settings, once} = context;
+        const {a, b} = await stateWithSplitKeys(context);
+        const second = await once({now: now + 20000});
+        assertEqual(second.drew, false, 'the same data is not drawn again');
+        assertEqual(settings.get_string('picture-uri'), GLib.filename_to_uri(a, null));
+        assertEqual(settings.get_string('picture-uri-dark'), GLib.filename_to_uri(a, null));
+        assertEqual(second.uri, GLib.filename_to_uri(a, null));
+        assertDeepEqual(pictureFiles(paths), [GLib.path_get_basename(a), GLib.path_get_basename(b)].sort());
+        assertTrue(GLib.file_test(b, GLib.FileTest.EXISTS), 'the file that picture-uri-dark showed was deleted at once');
+        // The next run deletes B.
+        const third = await once({now: now + 25000});
+        assertEqual(third.drew, false);
+        assertDeepEqual(pictureFiles(paths), [GLib.path_get_basename(a)]);
+    }));
+
+test('a locked key stops the run before it writes a file', () =>
+    withRun(async context => {
+        const {server, paths, settings, once} = context;
+        await stateWithSplitKeys(context);
+        const before = runtimeFiles(paths);
+        const locked = {
+            get_string: key => settings.get_string(key),
+            is_writable: key => key !== 'picture-uri-dark',
+            delay() {}, set_string() {}, apply() {},
+        };
+        server.setRoute('/api/v1/alerts', {body: JSON.stringify({oblasts: [], raions: []})});
+        await assertRejects(once({settings: locked, now: now + 20000}),
+            /^Cannot set the wallpaper: picture-uri-dark is not writable$/);
+        assertDeepEqual(runtimeFiles(paths), before);
     }));
 
 // An earlier run that was killed (for example during a PNG write) never reached its
