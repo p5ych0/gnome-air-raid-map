@@ -257,7 +257,8 @@ plain background at each side of the banner. The text stays fully visible.
 - **Trust store.** The updater checks the NEPTUN certificate against the
   system CA file `/etc/ssl/certs/ca-certificates.crt`. On Debian and Ubuntu,
   that is the default trust store. On Fedora, it replaces the p11-kit trust
-  store, to use less CPU time. `update-ca-trust` writes that file, so run it
+  store, to use less CPU time. On Fedora, `update-ca-trust` writes that file.
+  On Debian and Ubuntu, `update-ca-certificates` writes it. Run that tool
   after you change the system trust. If the file is missing or empty, the
   updater uses the default trust store.
 - **Language.** The text on the picture is in Ukrainian only.
