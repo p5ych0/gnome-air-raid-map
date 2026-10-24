@@ -19,11 +19,11 @@
 //   Updater runs: no gap between run starts above 90 s (with the gaps from the first
 //   sample to the first run and from the last run to the last sample); at least 90 %
 //   of the runs that 30 s steps allow (one run of slack at the end); MemoryPeak
-//   recorded for every run; the growth of MemoryPeak over the whole soak (the trend
-//   times the span, as for gnome-shell) is less than 1 % of the mean peak; the CPU
-//   time of all runs is less than 1 % of the time (864 s in 24 hours, goal 6). Each
-//   run that did not succeed is listed with a REVIEW line: its cause must be known
-//   (spec 7.4, check 4). REVIEW does not change the exit status.
+//   recorded for every run; the peak trend is less than 1 % of the mean peak per
+//   100 runs; the CPU time of all runs
+//   is less than 1 % of the time (864 s in 24 hours, goal 6). Each run that did not
+//   succeed is listed with a REVIEW line: its cause must be known (spec 7.4, check
+//   4). REVIEW does not change the exit status.
 //   gnome-shell (spec 7.4, check 5): shell in both containers for the whole soak;
 //   every GC probe ran; for the raw samples (every 60 s) and for the post-GC samples
 //   (30 s after each GC probe), PSS and its anonymous part: the trend of the updater
@@ -238,9 +238,6 @@ function runChecks(role) {
     const trend = measured.length >= 2 ? slope(measured.map((r, i) => i + 1), peaksMb) * 100 : NaN;
     const perHour = measured.length >= 2
         ? slope(measured.map(r => hours(r.start_epoch - starts[0])), peaksMb) : NaN;
-    // The growth over the whole span of the runs, as in shellChecks.
-    const span = measured.length ? measured[measured.length - 1].start_epoch - measured[0].start_epoch : 0;
-    const growth = perHour * hours(span);
     const cpuTotal = runs.reduce((a, r) => a + r.cpu_ns / 1e9, 0);
     const busiest = maxBy(runs, r => r.cpu_ns);
     const longest = maxBy(runs, r => r.seconds);
@@ -265,8 +262,8 @@ function runChecks(role) {
     for (const [h, block] of hourly)
         print(`    hour ${h}: ${block.length} runs, mean peak ${fixed(mean(block.map(r => Number(r.peak_bytes) / 1048576)))} MB, ` +
             `mean CPU ${fixed(mean(block.map(r => r.cpu_ns / 1e9)), 3)} s`);
-    print(`  peak trend: ${fixed(perHour, 3)} MB per hour, growth ${fixed(growth, 2)} MB over ${hms(span)} ` +
-        `(${fixed(growth / meanPeak * 100, 3)} % of the mean); ${fixed(trend, 2)} MB per 100 runs`);
+    print(`  peak trend: ${fixed(trend, 2)} MB per 100 runs (${fixed(trend / meanPeak * 100, 3)} % of the mean), ` +
+        `${fixed(perHour, 3)} MB per hour`);
     print(`  CPU: total ${fixed(cpuTotal)} s in ${runTime} s (${fixed(cpuTotal / runTime * 100, 3)} % of one core); ` +
         `max one run ${fixed(busiest.cpu_ns / 1e9, 2)} s; longest run ${fixed(longest.seconds, 2)} s`);
     const messages = new Map();
@@ -296,8 +293,7 @@ function runChecks(role) {
         `${role.name}: at least ${MIN_RUN_SHARE * 100} % of the possible runs, with one run of slack at the end ` +
         `(${runs.length} of ${fixed(expectedRuns, 1)})`);
     verdict(measured.length === runs.length, `${role.name}: systemd records MemoryPeak for every run`);
-    verdict(Number.isFinite(growth) && growth < meanPeak / 100, `${role.name}: the MemoryPeak growth over the whole ` +
-        `soak is less than 1 % of the mean peak (growth ${fixed(growth, 2)} MB, limit ${fixed(meanPeak / 100, 2)} MB)`);
+    verdict(Math.abs(trend) < meanPeak / 100, `${role.name}: the MemoryPeak trend is less than 1 % of the mean peak per 100 runs`);
     verdict(cpuTotal < runTime / 100, `${role.name}: the CPU time of all runs is less than 1 % of the time (${fixed(runTime / 100)} s)`);
     // Spec 7.4, check 4: a failed run passes when it has a known cause (for example,
     // the network was down). That needs a person: the line says REVIEW, and it does

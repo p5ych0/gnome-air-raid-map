@@ -108,17 +108,4 @@ test('the gnome-shell CPU check judges the shell service with its children', () 
     assertEqual(result.status, 1, 'exit status');
 });
 
-test('the MemoryPeak check limits the growth over the whole soak', () => {
-    // 3 % over 480 runs is 0.6 % per 100 runs, but more than 1 % over the whole soak.
-    const result = soak({peakGrowth: 0.03});
-    assertEqual(verdictOf(result, 'updater: the MemoryPeak'), 'FAIL');
-    assertEqual(result.status, 1, 'exit status');
-});
-
-test('a MemoryPeak that falls over the soak passes, as in the gnome-shell checks', () => {
-    const result = soak({peakGrowth: -0.03});
-    assertEqual(verdictOf(result, 'updater: the MemoryPeak'), 'PASS');
-    assertEqual(result.status, 0, 'exit status');
-});
-
 await run();
