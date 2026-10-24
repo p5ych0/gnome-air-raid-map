@@ -4,25 +4,40 @@
 # The timer of the user manager starts every run; nothing runs the updater by hand.
 # The updater gets its data from the local fixture server (fixture.js), through
 # AIR_RAID_MAP_API_BASE in the user manager environment (systemctl --user set-environment).
+# The live picture is the picture*.png file in the runtime folder that the settings
+# point to: after the failure banner, the updater uses a new name (picture-<ms>.png).
 # Steps:
-#   a  install; log out (the timer stops) and log in again; the timer starts a run at
-#      session start and then every ~30 s; 4 runs exit 0; the screen shows the live picture.
-#   b  a drop-in breaks the display (AIR_RAID_MAP_DISPLAY=broken) and the saved
-#      layout is deleted: the run fails, OnFailure= sets the banner; without the
-#      drop-in the next run puts the live picture back.
-#   c  MemoryMax and TimeoutStartSec of the service; the kernel limit of a running
-#      run; a drop-in with TimeoutStartSec=5s and a server that never answers: systemd
-#      stops the run, and OnFailure= sets the banner; the same server with
-#      TimeoutStartSec=25s: the 15 s request deadline ends the run first (exit 0);
-#      MemoryMax=20M with swap (information only); MemoryMax=4M without swap (oom-kill, banner);
-#      then the live picture again.
+#   a  log out; install with graphical-session.target inactive: the timer is enabled
+#      but not active, and install.sh says so; no run while logged out. Log in: the
+#      timer starts a run at session start and then every ~30 s; 4 runs exit 0; the
+#      screen shows the live picture; one picture file. Log out and in again: the
+#      timer stops and starts with the session.
+#   b  a drop-in breaks the display (AIR_RAID_MAP_DISPLAY=broken), and the saved
+#      layout is removed from the state file: the run fails, OnFailure= sets the
+#      banner. The next failure runs the failure unit again, and it sets no key (no
+#      dconf Change call). Without the drop-in, the next run puts the live picture
+#      back under a new file name, and one picture file remains.
+#   c  MemoryMax, MemorySwapMax=0, TimeoutStartSec, OnFailure= and SuccessExitStatus of
+#      the service, and the kernel limits of a running run. A drop-in with
+#      TimeoutStartSec=5s and a server that never answers: systemd stops the run at
+#      the timeout (a failure), and OnFailure= sets the banner. The same server with
+#      TimeoutStartSec=25s: the 15 s request deadline ends the run first (exit 0).
+#      systemctl stop during a run: the result is success, and the failure unit does
+#      not run. MemoryMax=20M (information); MemoryMax=4M: oom-kill, and OnFailure=
+#      sets the banner. Then the live picture again, and one picture file.
+#   f  no .goutputstream-* or *.tmp file in the runtime, cache, state and data folders.
+#      Information: a lost state file leaves the old picture file.
 #   d  uninstall: the wallpaper from before the install, no file of the program in
 #      the home and runtime folders, no unit, no run after the uninstall.
+#   e  install again; a run that waits for a server that never answers; the uninstall
+#      during that run: the wallpaper from before the install, not the banner, and no
+#      run of the failure unit after the uninstall began.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines.
 # Files: a-live.png, b-banner.png, b-live.png, c-banner.png, c-oom-banner.png,
-# c-live.png, d-restored.png (screenshots); <name>-picture.png and <name>-layout.json
-# (for compare.js); journal-<step>.txt (journalctl --user excerpts); runs.txt (one
-# line for each run that the scenario waited for); install.*, uninstall.*.
+# c-live.png, d-restored.png, e-restored.png (screenshots); <name>-picture.png and
+# <name>-layout.json (for compare.js); journal-<step>.txt (journalctl --user
+# excerpts); runs.txt (one line for each run that the scenario waited for);
+# dconf-changes.txt (the dconf Change calls of step b); install*.*, uninstall*.*.
 PORT=8765
 SCHEMA=org.gnome.desktop.background
 APP=gnome-air-raid-map
@@ -35,6 +50,7 @@ KEYS=(picture-uri picture-uri-dark picture-options primary-color)
 KNOWN=("'file:///srv/known-light.png'" "'file:///srv/known-dark.png'" "'zoom'" "'#336699'")
 KNOWN_COLOR='#3a6b35'
 MEMORY_MAX=314572800
+API=http://127.0.0.1:$PORT
 status=0
 
 check() {
@@ -64,8 +80,8 @@ STATEDIR=$(xdg_dir XDG_STATE_HOME .local/state)/$APP
 UNITDIR=$(xdg_dir XDG_CONFIG_HOME .config)/systemd/user
 DROPIN=$UNITDIR/$SERVICE.d
 RUNDIR=$TEST_RUNTIME/$APP
-LIVE_URI="file://$RUNDIR/picture.png"
 BANNER_URI="file://$APPDIR/banner.png"
+LIVE_PATH=
 
 keys_are() {
     local i value result=0
@@ -77,13 +93,27 @@ keys_are() {
     return $result
 }
 
+# The keys point to the live picture: picture-uri and picture-uri-dark to the same
+# picture*.png file in the runtime folder, and picture-options spanned. Sets LIVE_PATH.
 live_keys() {
-    local uri dark options
+    local uri dark options path
     uri=$(as_user gsettings get "$SCHEMA" picture-uri)
     dark=$(as_user gsettings get "$SCHEMA" picture-uri-dark)
     options=$(as_user gsettings get "$SCHEMA" picture-options)
     echo "#   picture-uri $uri, picture-uri-dark $dark, picture-options $options"
-    [ "$uri" = "'$LIVE_URI'" ] && [ "$dark" = "'$LIVE_URI'" ] && [ "$options" = "'spanned'" ]
+    path=${uri#"'file://"}
+    path=${path%"'"}
+    [ "$uri" = "$dark" ] && [ "$options" = "'spanned'" ] && [[ $path == "$RUNDIR"/picture*.png ]] &&
+        [ -f "$path" ] || return 1
+    LIVE_PATH=$path
+}
+
+# Exactly one picture*.png file in the runtime folder.
+one_picture() {
+    local files
+    files=$(find "$RUNDIR" -maxdepth 1 -name 'picture*.png' -printf '%f\n' | sort)
+    sed 's/^/#   runtime folder: /' <<< "$files"
+    [ "$(grep -c . <<< "$files")" -eq 1 ]
 }
 
 banner_keys() {
@@ -187,6 +217,18 @@ no_dropins() {
     user_systemctl daemon-reload
 }
 
+# state_edit <js>: changes the state file of the updater, as the test user. The
+# JavaScript changes the object s. Call it when no run is active. The eval only runs
+# the literal JavaScript of this scenario (in a disposable container), never data.
+state_edit() {
+    as_user_bare gjs -c '
+        const GLib = imports.gi.GLib;
+        const path = ARGV[0];
+        const s = JSON.parse(new TextDecoder().decode(GLib.file_get_contents(path)[1]));
+        eval(ARGV[1]);
+        GLib.file_set_contents(path, JSON.stringify(s));' "$RUNDIR/state.json" "$1"
+}
+
 # journal_excerpt <step> <since epoch>: the journal lines of the units since a time.
 journal_excerpt() {
     user_journal -o short-iso-precise --since "@$2" -u "$SERVICE" -u "$FAILED" -u "$TIMER" \
@@ -194,10 +236,17 @@ journal_excerpt() {
     sed 's/^/#   journal: /' "$OUT/journal-$1.txt" | tail -n 25
 }
 
-# live_step <name>: the keys, a screenshot, and compare.js with the picture of the last run.
+# journal_lines <since epoch> <unit>: the messages of the unit since the time. The
+# status is the status of journalctl, so a failed read is a failed check.
+journal_lines() {
+    user_journal -q -o cat --since "@$1" -u "$2"
+}
+
+# live_step <name>: the keys, one picture file, a screenshot, and compare.js.
 live_step() {
-    check "$1: the wallpaper keys point to the live picture, spanned" live_keys
-    cp "$RUNDIR/picture.png" "$OUT/$1-picture.png"
+    check "$1: the wallpaper keys point to the live picture (picture*.png in the runtime folder), spanned" live_keys
+    check "$1: one picture file in the runtime folder" one_picture
+    [ -n "$LIVE_PATH" ] && cp "$LIVE_PATH" "$OUT/$1-picture.png"
     gjs -c '
         const GLib = imports.gi.GLib;
         const state = JSON.parse(new TextDecoder().decode(GLib.file_get_contents(ARGV[0])[1]));
@@ -228,6 +277,13 @@ restore_step() {
     live_step "$1"
 }
 
+# The dconf Change calls on the session bus of the test user: one for each
+# gsettings set, also when the value does not change (the dconf database file does
+# not change then, so only the bus shows the call).
+dconf_count() {
+    grep -c 'Member=Change' "$OUT/dconf-changes.txt"
+}
+
 # Step 0: the fixture server (a root service of the container), the known wallpaper.
 mkdir -p "$FIXTURE"
 gjs -m /repo/tests/gnome/scenarios/fixture.js "$FIXTURE" || exit 1
@@ -236,7 +292,7 @@ for ((i = 0; i < 40; i++)); do
     (exec 5<> "/dev/tcp/127.0.0.1/$PORT") 2> /dev/null && break
     sleep 0.25
 done
-user_systemctl set-environment "AIR_RAID_MAP_API_BASE=http://127.0.0.1:$PORT"
+user_systemctl set-environment "AIR_RAID_MAP_API_BASE=$API"
 for picture in /srv/known-light.png /srv/known-dark.png; do
     gjs -c '
         const Cairo = imports.cairo;
@@ -265,20 +321,25 @@ echo "# user manager environment: $(user_systemctl show-environment | tr '\n' ' 
 echo "# program $APPDIR, units $UNITDIR, cache $CACHEDIR, state $STATEDIR, runtime $RUNDIR"
 : > "$OUT/runs.txt"
 
-# Step a: install, log out, log in, four timer runs.
+# Step a: install with no graphical session (M3), log in, four timer runs.
 check "a: the known wallpaper is set" keys_are "${KNOWN[@]}"
-check "a: install.sh exits 0" install_run install
-check "a: the timer is active after the install" user_systemctl is-active --quiet "$TIMER"
-check "a: the timer is enabled in graphical-session.target.wants" \
-    test -L "$UNITDIR/graphical-session.target.wants/$TIMER"
 stop_session
-check "a: after logout the timer is inactive" test "$(prop "$TIMER" ActiveState)" = inactive
+check "a: graphical-session.target is inactive (logged out)" \
+    test "$(prop graphical-session.target ActiveState)" = inactive
+check "a: install.sh exits 0 with no graphical session" install_run install
+check "a: install.sh says that the map starts at the next graphical login" \
+    grep -q 'No graphical session runs now' "$OUT/install.stdout"
+check "a: the timer is enabled (graphical-session.target.wants)" \
+    test -L "$UNITDIR/graphical-session.target.wants/$TIMER"
+check "a: the timer is enabled but not active" \
+    test "$(prop "$TIMER" UnitFileState)/$(prop "$TIMER" ActiveState)" = enabled/inactive
 before=$(invocation "$SERVICE")
 sleep 35
 check "a: no run while logged out (35 s)" test "$(invocation "$SERVICE")" = "$before"
 since=$(date +%s)
-start_session || { echo "not ok - a: the session starts again"; exit 1; }
+start_session || { echo "not ok - a: the session starts"; exit 1; }
 session_us=$(prop graphical-session.target ActiveEnterTimestampMonotonic)
+check "a: after the login the timer is active" test "$(prop "$TIMER" ActiveState)" = active
 starts=() results=()
 for n in 1 2 3 4; do
     rec=$(wait_run "$SERVICE" "$before" 45) || { echo "not ok - a: timer run $n"; status=1; break; }
@@ -303,49 +364,85 @@ check "a: 4 runs, each 29-33 s after the previous one" \
 check "a: each run exits 0 (result/status: ${results[*]})" \
     test "${results[*]}" = "success/0 success/0 success/0 success/0"
 live_step a-live
-# Information: Gio.File.move() of the rename method (updater/writer.js) makes GIO
-# write a GVfs metadata entry for each new picture.
+first_picture=$LIVE_PATH
+# The timer stops and starts with the session.
+wait_idle
+stop_session
+check "a: after a logout the timer is inactive" test "$(prop "$TIMER" ActiveState)" = inactive
+before=$(invocation "$SERVICE")
+start_session || { echo "not ok - a: the session starts again"; exit 1; }
+session_us=$(prop graphical-session.target ActiveEnterTimestampMonotonic)
+rec=$(wait_run "$SERVICE" "$before" 10)
+check "a: after the next login a run starts within 3 s and exits 0" \
+    awk -v a="$session_us" -v b="$(field "$rec" start_us)" -v r="$(field "$rec" result)" \
+        'BEGIN { d = (b - a) / 1e6; exit !(r == "success" && d >= 0 && d <= 3) }'
+# GVfs writes no metadata for the picture (updater/writer.js uses GLib.rename).
 ls -l --time-style=+%T "$(xdg_dir XDG_DATA_HOME .local/share)/gvfs-metadata" 2>&1 | sed 's/^/# a: information: gvfs-metadata: /'
 
-# Step b: OnFailure= after a failed run, and the live picture again.
+# Step b: OnFailure= after a failed run, failed.sh on the next failure, the live picture again.
+as_user busctl --user monitor --match 'type=method_call,interface=ca.desrt.dconf.Writer,member=Change' \
+    > "$OUT/dconf-changes.txt" 2>&1 &
+sleep 1
 since=$(date +%s)
 before_failed=$(invocation "$FAILED")
 dropin test-break.conf "Environment=AIR_RAID_MAP_DISPLAY=broken"
 wait_idle
-before=$(invocation "$SERVICE")
 # Without a saved layout, a run with a broken display fails (spec 5.6, "No layout").
-rm -f "$RUNDIR/state.json"
+# The state file keeps the name of the live picture.
+state_edit 'delete s.displayState'
+before=$(invocation "$SERVICE")
 rec=$(wait_run "$SERVICE" "$before" 45)
 check "b: the run with a broken display fails (Result=exit-code, status 1)" \
     test "$(field "$rec" result)/$(field "$rec" status)" = exit-code/1
+before=$(awk '{ print $2 }' <<< "$rec")
 rec=$(wait_run "$FAILED" "$before_failed" 10)
 check "b: OnFailure= ran $FAILED, and it exits 0" result_is "$rec" success
+before_failed=$(awk '{ print $2 }' <<< "$rec")
 banner_step b-banner
+changes=$(dconf_count)
+echo "#   dconf Change calls until the banner: $changes (failed.sh sets each key that differs)"
+check "b: the first failure unit run changed the keys (dconf Change calls: $changes)" test "$changes" -ge 1
+# The second failure: the keys show the banner already.
+rec=$(wait_run "$SERVICE" "$before" 45)
+check "b: the next run fails too" test "$(field "$rec" result)/$(field "$rec" status)" = exit-code/1
+rec=$(wait_run "$FAILED" "$before_failed" 10)
+check "b: OnFailure= ran $FAILED again, and it exits 0" result_is "$rec" success
+sleep 1
+check "b: the second failure unit run made no dconf Change call ($changes before, $(dconf_count) after)" \
+    test "$(dconf_count)" -eq "$changes"
 journal_excerpt b "$since"
-since=$(date +%s)
 restore_step b-live
+check "b-live: the live picture has a new file name after the banner (${first_picture##*/} -> ${LIVE_PATH##*/})" \
+    test -n "$LIVE_PATH" -a "$LIVE_PATH" != "$first_picture"
+check "b-live: the dconf monitor saw the change back to the live picture ($(dconf_count) calls)" \
+    test "$(dconf_count)" -gt "$changes"
+pkill -u "$TEST_USER" -f 'busctl --user monitor'
 
 # Step c: the limits of the service.
 check "c: MemoryMax=$MEMORY_MAX (300M)" test "$(prop "$SERVICE" MemoryMax)" = $MEMORY_MAX
+check "c: MemorySwapMax=0" test "$(prop "$SERVICE" MemorySwapMax)" = 0
 check "c: TimeoutStartUSec=25s" test "$(prop "$SERVICE" TimeoutStartUSec)" = 25s
 check "c: OnFailure=$FAILED" test "$(prop "$SERVICE" OnFailure)" = "$FAILED"
+echo "#   SuccessExitStatus=$(prop "$SERVICE" SuccessExitStatus)"
+check "c: SuccessExitStatus has SIGTERM" sh -c 'case $1 in *TERM*|*15*) ;; *) exit 1 ;; esac' sh \
+    "$(prop "$SERVICE" SuccessExitStatus)"
 since=$(date +%s)
 before_failed=$(invocation "$FAILED")
-dropin test-hang.conf "TimeoutStartSec=5s" "Environment=AIR_RAID_MAP_API_BASE=http://127.0.0.1:$PORT/hang"
+dropin test-hang.conf "TimeoutStartSec=5s" "Environment=AIR_RAID_MAP_API_BASE=$API/hang"
 check "c: the drop-in sets TimeoutStartUSec=5s" test "$(prop "$SERVICE" TimeoutStartUSec)" = 5s
 wait_idle
 before=$(invocation "$SERVICE")
 if wait_started "$SERVICE" "$before" 45; then
     cgroup=$(prop "$SERVICE" ControlGroup)
     echo "#   cgroup $cgroup: memory.max $(cat "/sys/fs/cgroup$cgroup/memory.max"), memory.swap.max $(cat "/sys/fs/cgroup$cgroup/memory.swap.max" 2> /dev/null || echo -)"
-    check "c: the kernel limit of the running service is memory.max $MEMORY_MAX" \
-        test "$(cat "/sys/fs/cgroup$cgroup/memory.max")" = $MEMORY_MAX
+    check "c: the kernel limits of the running service are memory.max $MEMORY_MAX and memory.swap.max 0" \
+        test "$(cat "/sys/fs/cgroup$cgroup/memory.max")/$(cat "/sys/fs/cgroup$cgroup/memory.swap.max")" = "$MEMORY_MAX/0"
 else
     echo "not ok - c: a timer run starts"
     status=1
 fi
 rec=$(wait_run "$SERVICE" "$before" 20)
-check "c: systemd stops the run that waits for the server at 5 s (Result=timeout)" result_is "$rec" timeout
+check "c: systemd stops the run that waits for the server at 5 s (Result=timeout, a failure)" result_is "$rec" timeout
 rec=$(wait_run "$FAILED" "$before_failed" 10)
 check "c: OnFailure= ran $FAILED after the timeout, and it exits 0" result_is "$rec" success
 banner_step c-banner
@@ -353,7 +450,7 @@ journal_excerpt c-timeout "$since"
 
 since=$(date +%s)
 as_user_bare rm -f "$DROPIN/test-hang.conf"
-dropin test-hang.conf "Environment=AIR_RAID_MAP_API_BASE=http://127.0.0.1:$PORT/hang"
+dropin test-hang.conf "Environment=AIR_RAID_MAP_API_BASE=$API/hang"
 wait_idle
 before=$(invocation "$SERVICE")
 rec=$(wait_run "$SERVICE" "$before" 75)
@@ -362,34 +459,72 @@ check "c: with TimeoutStartSec=25s, the 15 s request deadline ends the same run 
     awk -v r="$(field "$rec" result)" -v s="$seconds" 'BEGIN { exit !(r == "success" && s >= 14 && s < 25) }'
 journal_excerpt c-deadline "$since"
 
+# systemctl stop during a run (the run waits for the server): a clean stop.
+since=$(date +%s)
+wait_idle
+before=$(invocation "$SERVICE")
+before_failed=$(invocation "$FAILED")
+if wait_started "$SERVICE" "$before" 45; then
+    sleep 2
+    user_systemctl stop "$SERVICE"
+    echo "#   after systemctl stop: Result=$(prop "$SERVICE" Result), ExecMainCode=$(prop "$SERVICE" ExecMainCode), ExecMainStatus=$(prop "$SERVICE" ExecMainStatus), ActiveState=$(prop "$SERVICE" ActiveState)"
+    check "c: systemctl stop during a run: Result=success, not failed" \
+        test "$(prop "$SERVICE" Result)/$(prop "$SERVICE" ActiveState)" = success/inactive
+    sleep 3
+    check "c: systemctl stop during a run: the failure unit did not run" \
+        test "$(invocation "$FAILED")" = "$before_failed"
+else
+    echo "not ok - c: a timer run starts (for systemctl stop)"
+    status=1
+fi
+journal_excerpt c-stop "$since"
+
 since=$(date +%s)
 as_user_bare rm -f "$DROPIN/test-hang.conf"
-# A run without the state file draws the whole picture: it uses the most memory.
+# A run that draws the whole picture uses the most memory: forget the render key.
 dropin test-memory.conf "MemoryMax=20M"
 wait_idle
-rm -f "$RUNDIR/state.json"
+state_edit 's.renderKey = ""'
 before=$(invocation "$SERVICE")
 rec=$(wait_run "$SERVICE" "$before" 45)
 echo "#   $rec"
-echo "# c: information: MemoryMax=20M with swap on: result $(field "$rec" result)," \
-    "MemoryPeak $(field "$rec" peak), MemorySwapPeak $(field "$rec" swap_peak) (host swap: $(awk 'NR > 1 { s += $3 } END { print s + 0 }' /proc/swaps) KiB)"
-# The oom-kill check: 4M without swap is less than gjs needs to start, on both
-# images. (A run of this scenario fits in 20M on Ubuntu 24.04: the synthetic map is
-# small. systemd 255 also shows a wrong MemoryPeak after a run, so the peak cannot
-# choose the limit.)
-before_failed=$(invocation "$FAILED")
-dropin test-memory.conf "MemoryMax=4M" "MemorySwapMax=0"
+echo "# c: information: MemoryMax=20M (MemorySwapMax=0 from the unit): result $(field "$rec" result)," \
+    "MemoryPeak $(field "$rec" peak), MemorySwapPeak $(field "$rec" swap_peak)"
+# The oom-kill check: 4M is less than gjs needs to start, on both images. (A run of
+# this scenario fits in 20M on Ubuntu 24.04: the synthetic map is small. systemd 255
+# also shows a wrong MemoryPeak after a run, so the peak cannot choose the limit.)
+# If the 20M run failed, its failure unit runs now: let it end first.
 wait_idle
-rm -f "$RUNDIR/state.json"
+sleep 2
+before_failed=$(invocation "$FAILED")
+dropin test-memory.conf "MemoryMax=4M"
+wait_idle
 before=$(invocation "$SERVICE")
 rec=$(wait_run "$SERVICE" "$before" 45)
 echo "#   $rec"
-check "c: MemoryMax=4M without swap: the kernel stops the run (Result=oom-kill)" result_is "$rec" oom-kill
+check "c: MemoryMax=4M: the kernel stops the run (Result=oom-kill, a failure)" result_is "$rec" oom-kill
 rec=$(wait_run "$FAILED" "$before_failed" 10)
 check "c: OnFailure= ran $FAILED after the oom-kill, and it exits 0" result_is "$rec" success
 banner_step c-oom-banner
 journal_excerpt c-memory "$since"
 restore_step c-live
+
+# Step f: no temporary files from the runs (killed, stopped or normal).
+no_temp_files() {
+    local found
+    found=$(find "$RUNDIR" "$CACHEDIR" "$STATEDIR" "$APPDIR" \( -name '.goutputstream-*' -o -name '*.tmp' \) 2>&1)
+    [ -z "$found" ] || sed 's/^/#   temporary file: /' <<< "$found"
+    [ -z "$found" ]
+}
+check "f: no .goutputstream-* or *.tmp file in the runtime, cache, state and data folders" no_temp_files
+# Information: a lost state file (it is in RAM) gives a first run, with a new picture
+# name; the run does not know the old picture file, so the file stays until logout.
+wait_idle
+as_user_bare rm -f "$RUNDIR/state.json"
+before=$(invocation "$SERVICE")
+rec=$(wait_run "$SERVICE" "$before" 45)
+echo "# f: information: after a lost state file, the next run: result $(field "$rec" result); runtime folder:" \
+    "$(find "$RUNDIR" -maxdepth 1 -name 'picture*.png' -printf '%f ')"
 
 # Step d: uninstall.
 since=$(date +%s)
@@ -398,9 +533,13 @@ check "d: install.sh --uninstall exits 0" install_run uninstall --uninstall
 # A run that the uninstall stopped can have started in the same second: count from the next second.
 after=$(($(date +%s) + 1))
 check "d: the four keys have the known values again" keys_are "${KNOWN[@]}"
-left=$(find "$TEST_HOME" "$TEST_RUNTIME" -name "*$APP*" 2> /dev/null)
-[ -z "$left" ] || sed 's/^/#   left: /' <<< "$left"
-check "d: no file or folder of the program in $TEST_HOME and $TEST_RUNTIME" test -z "$left"
+no_program_files() {
+    local left
+    left=$(find "$TEST_HOME" "$TEST_RUNTIME" -name "*$APP*" 2> /dev/null)
+    [ -z "$left" ] || sed 's/^/#   left: /' <<< "$left"
+    [ -z "$left" ]
+}
+check "d: no file or folder of the program in $TEST_HOME and $TEST_RUNTIME" no_program_files
 check "d: the program, cache, state and runtime folders are gone" \
     sh -c '! ls -d "$@" 2> /dev/null' sh "$APPDIR" "$CACHEDIR" "$STATEDIR" "$RUNDIR"
 check "d: systemd has no unit file of the program" \
@@ -409,22 +548,58 @@ check "d: the timer is not loaded" test "$(prop "$TIMER" LoadState)" = not-found
 # The journal read must work: it shows the stop of the timer by the uninstall.
 timer_stopped() {
     local lines
-    lines=$(user_journal -q -o cat --since "@$since" -u "$TIMER") || { echo "#   journalctl failed"; return 1; }
+    lines=$(journal_lines "$1" "$TIMER") || { echo "#   journalctl failed"; return 1; }
     grep -q "^Stopped $TIMER" <<< "$lines"
 }
-no_run_after() {
+no_start_after() {
     local lines
-    lines=$(user_journal -q -o cat --since "@$after" -u "$SERVICE") || { echo "#   journalctl failed"; return 1; }
-    [ -z "$lines" ] || sed 's/^/#   after the uninstall: /' <<< "$lines"
+    lines=$(journal_lines "$1" "$2") || { echo "#   journalctl failed"; return 1; }
+    [ -z "$lines" ] || sed "s/^/#   $2 after the uninstall: /" <<< "$lines"
     ! grep -q '^Starting ' <<< "$lines"
 }
 sleep 35
-check "d: the journal shows that the uninstall stopped the timer" timer_stopped
-check "d: no run in 35 s after the uninstall" no_run_after
+check "d: the journal shows that the uninstall stopped the timer" timer_stopped "$since"
+check "d: no run in 35 s after the uninstall" no_start_after "$after" "$SERVICE"
 screenshot "$OUT/d-restored.png" || status=1
 check "d-restored.png shows the known wallpaper" \
     indented gjs -m /repo/tests/gnome/scenarios/centered.js "$OUT/d-restored.png" "$OUT/monitors.json" "$KNOWN_COLOR"
 journal_excerpt d "$since"
+
+# Step e (review finding C1): the uninstall during a run.
+no_onfailure_after() {
+    local lines
+    lines=$(journal_lines "$1" "$SERVICE") || { echo "#   journalctl failed"; return 1; }
+    sed 's/^/#   service after the uninstall began: /' <<< "$lines"
+    ! grep -q 'Triggering OnFailure' <<< "$lines"
+}
+check "e: install.sh exits 0 (session active)" install_run install-e
+before=
+rec=$(wait_run "$SERVICE" "$before" 15)
+check "e: the first run after the install exits 0" result_is "$rec" success
+user_systemctl set-environment "AIR_RAID_MAP_API_BASE=$API/hang"
+before=$(awk '{ print $2 }' <<< "$rec")
+before_failed=$(invocation "$FAILED")
+if wait_started "$SERVICE" "$before" 45; then
+    sleep 2
+    check "e: a run is in progress (it waits for the server)" test "$(prop "$SERVICE" ActiveState)" = activating
+    since=$(date +%s)
+    check "e: install.sh --uninstall during the run exits 0" install_run uninstall-e --uninstall
+    check "e: the four keys have the known values again, not the banner" keys_are "${KNOWN[@]}"
+    sleep 10
+    check "e: 10 s later the keys still have the known values" keys_are "${KNOWN[@]}"
+    check "e: the journal shows that the uninstall stopped the timer" timer_stopped "$since"
+    check "e: no run of $FAILED after the uninstall began" no_start_after "$since" "$FAILED"
+    check "e: no OnFailure= after the uninstall began" no_onfailure_after "$since"
+    check "e: no file or folder of the program in $TEST_HOME and $TEST_RUNTIME" no_program_files
+else
+    echo "not ok - e: a timer run starts (for the uninstall during a run)"
+    status=1
+fi
+user_systemctl set-environment "AIR_RAID_MAP_API_BASE=$API"
+screenshot "$OUT/e-restored.png" || status=1
+check "e-restored.png shows the known wallpaper" \
+    indented gjs -m /repo/tests/gnome/scenarios/centered.js "$OUT/e-restored.png" "$OUT/monitors.json" "$KNOWN_COLOR"
+journal_excerpt e "${since:-0}"
 
 echo "# systemd: $status (0: every check passed)"
 exit $status

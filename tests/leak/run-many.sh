@@ -20,11 +20,13 @@
 # Files check (brief Step 3): du -sb and find | wc -l of each folder after run 10
 # (run 11 if <runs> is odd: the alert payload alternates, so the check run has the
 # same payload as the last run) and after the last run. The entry counts must be
-# the same. The bytes must be the same, except in the runtime folder: picture.png
+# the same. The bytes must be the same, except in the runtime folder: the picture
 # and state.json show the time of the run ("Оновлено HH:MM", the request times), so
 # their size changes by a few bytes; the limit there is 1 %. A file that has another
-# name or size after the last run is printed as a "# file changed" note (example:
-# the journal of gvfs-metadata, which GVfs replaces when it is full).
+# name or size after the last run is printed as a "# file changed" note. Example:
+# the picture picture-<ms>.png. With GSETTINGS_BACKEND=memory each run starts with
+# the default wallpaper settings, so each run moves the picture to a new name and
+# deletes the old file (updater/run.js).
 # Exit status: 0 if every run exits 0, the files check passes, and no updater
 # process is left.
 set -euo pipefail
