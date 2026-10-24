@@ -12,6 +12,11 @@ UNITDIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 STATEDIR=${XDG_STATE_HOME:-$HOME/.local/state}/$APP
 CACHEDIR=${XDG_CACHE_HOME:-$HOME/.cache}/$APP
 SAVED=$STATEDIR/previous-wallpaper
+# The folders of the pictures of the program: the banner, and the live map.
+PICTURE_FOLDERS=("$APPDIR")
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    PICTURE_FOLDERS+=("$XDG_RUNTIME_DIR/$APP")
+fi
 SCHEMA=org.gnome.desktop.background
 # The same keys as KEYS in updater/wallpaper.js.
 KEYS=(picture-uri picture-uri-dark picture-options primary-color)
@@ -63,37 +68,71 @@ points_into() {
         imports.system.exit(inside ? 0 : 1);' "${@:2}"
 }
 
-# save_wallpaper <gjs>: saves the wallpaper keys, one "key<TAB>value" line for each
-# key, with the value as gsettings prints it. A saved file is never replaced: after
-# a second install, the uninstall must still put back the wallpaper from before the
-# first install. If the saved file was lost, the wallpaper can show a picture of
-# the program (the map or the banner). That picture is not the wallpaper of the
-# user: save nothing for that key, and the uninstall resets it to the GNOME default.
+# save_wallpaper <gjs>: saves the wallpaper keys, one "key<TAB>value" line
+# for each key, with the value as gsettings prints it. A saved file is never
+# replaced: after a second install, the uninstall must still put back the wallpaper
+# from before the first install. If the saved file was lost, the wallpaper can show
+# a picture of the program (the map or the banner), and then picture-options and
+# primary-color are the values of the program too. That is not the wallpaper of the
+# user: save no key, and the uninstall resets all four keys to the GNOME defaults.
 save_wallpaper() {
-    local key value temporary=$SAVED.tmp folders=("$APPDIR")
+    local key value i ours=0 values=() temporary=$SAVED.tmp
     [ -e "$SAVED" ] && return 0
-    if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-        folders+=("$XDG_RUNTIME_DIR/$APP")
-    fi
     mkdir -p "$STATEDIR"
-    : > "$temporary"
     for key in "${KEYS[@]}"; do
         value=$(gsettings get "$SCHEMA" "$key")
+        values+=("$value")
         case $key in
             picture-uri | picture-uri-dark)
-                if points_into "$1" "$value" "${folders[@]}"; then
-                    warn "$key is $value, a picture of $APP: it is not saved," \
-                        "and the uninstall resets $key to the GNOME default"
-                    continue
+                if points_into "$1" "$value" "${PICTURE_FOLDERS[@]}"; then
+                    warn "$key is $value, a picture of $APP"
+                    ours=1
                 fi ;;
         esac
-        printf '%s\t%s\n' "$key" "$value" >> "$temporary"
     done
+    : > "$temporary"
+    if [ $ours -eq 1 ]; then
+        warn "no wallpaper key is saved, and the uninstall resets all of them to the GNOME defaults"
+    else
+        for i in "${!KEYS[@]}"; do
+            printf '%s\t%s\n' "${KEYS[i]}" "${values[i]}" >> "$temporary"
+        done
+    fi
     mv "$temporary" "$SAVED"
 }
 
+# Set by install_app. timer_stopped: the install stopped the timer, and the timer
+# does not run again. program_broken: the install deleted the old program, and the
+# new program and units are not complete.
+timer_stopped=0
+program_broken=0
+gsettings=
+banner_uri=
+
+# The EXIT trap of the install. If the install fails after it stopped the timer, the
+# last map would stay on the screen with its old time and no marking. So start the
+# timer again: if the program is broken, its runs fail and the failure unit shows
+# the banner. Show the banner now, if the old failure script is still there.
+recover_failed_install() {
+    local status=$?
+    trap - EXIT
+    if [ "$status" -ne 0 ] && [ "$timer_stopped" -eq 1 ]; then
+        warn "the install failed: starting $TIMER again"
+        systemctl --user start "$TIMER" || warn "cannot start $TIMER: run $0 again"
+        if [ "$program_broken" -eq 1 ]; then
+            if [ -f "$APPDIR/updater/failed.sh" ] && [ -f "$APPDIR/banner.png" ]; then
+                /bin/sh "$APPDIR/updater/failed.sh" "$gsettings" "$banner_uri" ||
+                    warn "cannot show the failure banner"
+            else
+                warn "the program in $APPDIR is not complete: run $0 again to install it"
+            fi
+        fi
+    fi
+    exit "$status"
+}
+
 install_app() {
-    local gjs gsettings banner_uri unit name
+    local gjs unit name
     gjs=$(require gjs gjs)
     gsettings=$(require gsettings 'glib2 (Fedora) or libglib2.0-bin (Debian, Ubuntu)')
     require systemctl systemd > /dev/null
@@ -101,21 +140,29 @@ install_app() {
     systemctl --user show-environment > /dev/null ||
         die "no systemd user session: systemctl --user does not answer"
     check_unit_value "$APPDIR"
+    banner_uri=$("$gjs" -c 'print(imports.gi.Gio.File.new_for_path(ARGV[0]).get_uri())' "$APPDIR/banner.png")
 
     # 1. The program. On an update, a run that starts while the old files are
-    # deleted fails and shows the banner. So stop the timer first; step 5 starts
-    # it again.
+    # deleted fails and shows the banner. So stop the timer and a run that is in
+    # progress first; step 5 starts the timer again. If a step fails before that,
+    # the EXIT trap starts the timer again.
+    trap recover_failed_install EXIT
     if systemctl --user is-active --quiet "$TIMER"; then
+        timer_stopped=1
         systemctl --user stop "$TIMER"
     fi
+    # A run in progress is not active, so stopping the timer does not stop it.
+    if [ -e "$UNITDIR/$APP.service" ]; then
+        systemctl --user stop "$APP.service" || warn "cannot stop $APP.service"
+    fi
     mkdir -p "$APPDIR"
+    program_broken=1
     rm -rf "$APPDIR/core" "$APPDIR/updater"
     cp -R "$SOURCE/core" "$SOURCE/updater" "$APPDIR/"
     cp "$SOURCE/LICENSE" "$APPDIR/"
 
     # 2. The units. In a unit file, %% is one %: the banner URI escapes some
     # characters as %XX.
-    banner_uri=$("$gjs" -c 'print(imports.gi.Gio.File.new_for_path(ARGV[0]).get_uri())' "$APPDIR/banner.png")
     mkdir -p "$UNITDIR"
     for unit in "$SOURCE"/systemd/*; do
         name=$(basename "${unit%.in}")
@@ -125,6 +172,7 @@ install_app() {
             die "a value in $UNITDIR/$name is not replaced"
         fi
     done
+    program_broken=0
 
     # 3. The wallpaper from before the install.
     save_wallpaper "$gjs"
@@ -143,6 +191,7 @@ install_app() {
         systemctl --user enable "$TIMER"
         echo "$APP: installed. No graphical session runs now: the map starts at the next graphical login."
     fi
+    timer_stopped=0
     echo "$APP: to uninstall, run: $0 --uninstall"
 }
 
@@ -159,7 +208,7 @@ reset_failed() {
 }
 
 uninstall_app() {
-    local key value unit restored=1 saved=' '
+    local gjs key value unit restored=1 saved=' ' ours=0
     # Stop the timer first: a run after the restore would set the map again.
     systemctl --user disable --now "$TIMER" || warn "cannot stop $TIMER"
     # A run that fails while it stops (for example at its start timeout) queues
@@ -193,7 +242,32 @@ uninstall_app() {
             esac
         done
     else
-        warn "no saved wallpaper in $SAVED: the wallpaper settings stay as they are"
+        # Without the saved file, only a key that shows a picture of the program is
+        # reset: the program deletes that picture below. If one does, picture-options
+        # and primary-color have the values of the program too.
+        warn "no saved wallpaper in $SAVED: only the keys that show a picture of $APP are reset"
+        if gjs=$(command -v gjs); then
+            for key in picture-uri picture-uri-dark; do
+                value=$(gsettings get "$SCHEMA" "$key") || value=
+                if points_into "$gjs" "$value" "${PICTURE_FOLDERS[@]}"; then
+                    ours=1
+                    gsettings reset "$SCHEMA" "$key" || {
+                        warn "cannot reset $key"
+                        restored=0
+                    }
+                fi
+            done
+            if [ $ours -eq 1 ]; then
+                for key in picture-options primary-color; do
+                    gsettings reset "$SCHEMA" "$key" || {
+                        warn "cannot reset $key"
+                        restored=0
+                    }
+                done
+            fi
+        else
+            warn "gjs is not installed: the wallpaper keys stay as they are"
+        fi
     fi
 
     for unit in "${UNITS[@]}"; do

@@ -14,8 +14,12 @@
 # while the timer runs: the saved wallpaper must not change, and the timer stops
 # before the files are copied; 8 uninstall (restored.png); 9 install without a
 # graphical session: enable the timer, but do not start it; 10 lose the saved
-# wallpaper while the map shows, install again: the pictures of the program are not
-# saved, and the uninstall resets their keys.
+# wallpaper while the map shows, install again: no key is saved, and the uninstall
+# resets all four keys; 11 install again while the timer runs, and make the install
+# fail after it stopped the timer: the timer starts again and the banner shows;
+# 12 lose the saved wallpaper while the banner shows: the uninstall resets the four
+# keys, and does not leave a deleted picture; 13 lose the saved wallpaper while
+# the wallpaper is not a picture of the program: the uninstall leaves the keys.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -111,6 +115,24 @@ saved_known() {
 saved_keys_are() {
     sed 's/^/#   previous-wallpaper: /' "$STATEDIR/previous-wallpaper"
     [ "$(cut -f 1 "$STATEDIR/previous-wallpaper")" = "$(printf '%s\n' "$@")" ]
+}
+
+saved_is_empty() {
+    [ -e "$STATEDIR/previous-wallpaper" ] && [ ! -s "$STATEDIR/previous-wallpaper" ]
+}
+
+# call_order <line ...>: calls.log has these lines, in this order (other lines can be between them).
+call_order() {
+    local line n=0 found
+    for line; do
+        found=$(tail -n +"$((n + 1))" "$OUT/calls.log" | grep -nxF -m 1 -- "$line" | cut -d: -f1)
+        [ -n "$found" ] || { echo "#   missing after line $n: $line"; return 1; }
+        n=$((n + found))
+    done
+}
+
+not() {
+    ! "$@"
 }
 
 # no_user_value <key ...>: the keys have no user value (as after gsettings reset).
@@ -367,9 +389,9 @@ touch "$STUB/active/$APP.timer"
 : > "$OUT/calls.log"
 check "step 7: a second install.sh exits 0" install_run install-2
 check "step 7: the saved wallpaper did not change" same_file "$OUT/previous-wallpaper" "$STATEDIR/previous-wallpaper"
-check "step 7: systemctl got stop $APP.timer before daemon-reload, then enable --now" calls_are \
+check "step 7: systemctl got stop of the timer and the service before daemon-reload, then enable --now" calls_are \
     'systemctl --user show-environment' "systemctl --user is-active --quiet $APP.timer" \
-    "systemctl --user stop $APP.timer" 'systemctl --user daemon-reload' \
+    "systemctl --user stop $APP.timer" "systemctl --user stop $APP.service" 'systemctl --user daemon-reload' \
     'systemctl --user is-active --quiet graphical-session.target' "systemctl --user enable --now $APP.timer"
 
 # Step 8: uninstall.
@@ -412,8 +434,9 @@ check "step 9: install.sh says that the map starts at the next graphical login" 
     grep -q 'next graphical login' "$OUT/install-3.stdout"
 
 # Step 10: the saved wallpaper is lost while the map shows (picture-uri) and the
-# banner shows (picture-uri-dark). A new install must not save these pictures as the
-# wallpaper from before: it saves nothing for these keys, and the uninstall resets them.
+# banner shows (picture-uri-dark). A new install must not save these pictures, nor
+# picture-options and primary-color, which are the values of the program: it saves
+# no key, and the uninstall resets all four.
 check "step 10: run 3 of the service exits 0" run_unit "$APP.service" service-3
 gsettings set "$SCHEMA" picture-uri-dark "'$BANNER_URI'"
 rm -f "$STATEDIR/previous-wallpaper"
@@ -422,26 +445,84 @@ check "step 10: install.sh warns that it does not save picture-uri" \
     grep -q "warning: picture-uri is 'file://$RUNDIR/" "$OUT/install-4.stderr"
 check "step 10: install.sh warns that it does not save picture-uri-dark" \
     grep -q "warning: picture-uri-dark is '$BANNER_URI'" "$OUT/install-4.stderr"
-check "step 10: the saved wallpaper has only picture-options and primary-color" \
-    saved_keys_are picture-options primary-color
-options=$(gsettings get "$SCHEMA" picture-options)
-color=$(gsettings get "$SCHEMA" primary-color)
+check "step 10: the saved wallpaper file has no key" saved_is_empty
 : > "$OUT/calls.log"
 check "step 10: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall-2 --uninstall
-check "step 10: the uninstall sets the saved keys and resets picture-uri and picture-uri-dark" calls_are \
+check "step 10: the uninstall resets the four keys" calls_are \
     "systemctl --user disable --now $APP.timer" \
     "systemctl --user stop $APP.service" \
     "systemctl --user stop $APP-failed.service" \
     "systemctl --user reset-failed $APP.service $APP-failed.service" \
-    "gsettings set $SCHEMA picture-options $options" \
-    "gsettings set $SCHEMA primary-color $color" \
     "gsettings reset $SCHEMA picture-uri" \
     "gsettings reset $SCHEMA picture-uri-dark" \
+    "gsettings reset $SCHEMA picture-options" \
+    "gsettings reset $SCHEMA primary-color" \
     'systemctl --user daemon-reload'
-check "step 10: picture-uri and picture-uri-dark have the GNOME default values" \
-    no_user_value picture-uri picture-uri-dark
+check "step 10: the four keys have the GNOME default values" no_user_value "${KEYS[@]}"
 check "step 10: the program, cache, state and runtime folders are gone" \
     none_exist "$APPDIR" "$CACHEDIR" "$STATEDIR" "$RUNDIR"
+
+# Step 11: a second install fails after it stopped the timer. The failure is a
+# folder in the place of the file of the timer unit: the redirection of sed fails
+# after the old program was deleted. The EXIT trap of install.sh must start the timer
+# again and show the banner (the stub gsettings is first in PATH, so that install.sh
+# uses it for the failure script).
+check "step 11: a clean install.sh exits 0" install_run install-5
+touch "$STUB/active/$APP.timer"
+rm "$UNITDIR/$APP.timer"
+mkdir "$UNITDIR/$APP.timer"
+: > "$OUT/calls.log"
+check "step 11: install.sh fails" not with_gsettings_stub install_run install-6
+sed 's/^/#   /' "$OUT/calls.log"
+check "step 11: systemctl got stop $APP.timer, then stop $APP.service, then start $APP.timer" \
+    call_order "systemctl --user stop $APP.timer" "systemctl --user stop $APP.service" \
+    "systemctl --user start $APP.timer"
+check "step 11: the failure script set the banner keys" \
+    grep -qx "gsettings set $SCHEMA picture-uri '$BANNER_URI'" "$OUT/calls.log"
+check "step 11: install.sh says that it starts the timer again" \
+    grep -q "starting $APP.timer again" "$OUT/install-6.stderr"
+rmdir "$UNITDIR/$APP.timer"
+
+# Step 12: the saved wallpaper is lost while the banner shows (step 11). The uninstall
+# resets the four keys: the program deletes the banner, and a key must not point to it.
+rm -f "$STATEDIR/previous-wallpaper"
+: > "$OUT/calls.log"
+check "step 12: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall-3 --uninstall
+check "step 12: the uninstall resets the four keys" calls_are \
+    "systemctl --user disable --now $APP.timer" \
+    "systemctl --user stop $APP.service" \
+    "systemctl --user stop $APP-failed.service" \
+    "systemctl --user reset-failed $APP.service $APP-failed.service" \
+    "gsettings get $SCHEMA picture-uri" \
+    "gsettings reset $SCHEMA picture-uri" \
+    "gsettings get $SCHEMA picture-uri-dark" \
+    "gsettings reset $SCHEMA picture-uri-dark" \
+    "gsettings reset $SCHEMA picture-options" \
+    "gsettings reset $SCHEMA primary-color" \
+    'systemctl --user daemon-reload'
+check "step 12: the four keys have the GNOME default values" no_user_value "${KEYS[@]}"
+check "step 12: the program, cache, state and runtime folders are gone" \
+    none_exist "$APPDIR" "$CACHEDIR" "$STATEDIR" "$RUNDIR"
+
+# Step 13: the saved wallpaper is lost, and the wallpaper is not a picture of the
+# program: the uninstall leaves the keys as they are.
+gsettings set "$SCHEMA" picture-uri "${KNOWN[0]}"
+gsettings set "$SCHEMA" picture-uri-dark "${KNOWN[1]}"
+gsettings set "$SCHEMA" picture-options "${KNOWN[2]}"
+gsettings set "$SCHEMA" primary-color "${KNOWN[3]}"
+check "step 13: install.sh exits 0" install_run install-7
+rm -f "$STATEDIR/previous-wallpaper"
+: > "$OUT/calls.log"
+check "step 13: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall-4 --uninstall
+check "step 13: the uninstall only reads the two picture keys" calls_are \
+    "systemctl --user disable --now $APP.timer" \
+    "systemctl --user stop $APP.service" \
+    "systemctl --user stop $APP-failed.service" \
+    "systemctl --user reset-failed $APP.service $APP-failed.service" \
+    "gsettings get $SCHEMA picture-uri" \
+    "gsettings get $SCHEMA picture-uri-dark" \
+    'systemctl --user daemon-reload'
+check "step 13: the four keys have the known values" keys_are "${KNOWN[@]}"
 
 echo "# install: $status (0: every check passed)"
 exit $status
