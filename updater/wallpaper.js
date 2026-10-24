@@ -15,6 +15,11 @@ export function backgroundSettings() {
     return new Gio.Settings({schema_id: SCHEMA});
 }
 
+// True if picture-uri and picture-uri-dark both point to uri.
+export function showsPicture(settings, uri) {
+    return settings.get_string('picture-uri') === uri && settings.get_string('picture-uri-dark') === uri;
+}
+
 // Points the wallpaper to uri with picture-options `options`. Writes only the keys
 // that differ, in one change: when picture-uri and picture-uri-dark change in two
 // writes, GNOME Shell starts to load the first picture and then destroys it

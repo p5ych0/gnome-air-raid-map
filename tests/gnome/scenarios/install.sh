@@ -9,10 +9,10 @@
 # Steps: 1 set a known wallpaper; 2 install; 3 check the files and the systemctl
 # calls; 4 run the service (map-1.png); 5 run the failure unit twice: the second
 # run must set no key (banner.png); 6 remove the alert from the fixture data and run
-# the service again (map-2.png): the screen must show the new picture, not a cached
-# copy of picture-1; 7 install again while the timer runs: the saved wallpaper must
-# not change, and the timer stops before the files are copied; 8 uninstall
-# (restored.png).
+# the service again (map-2.png): the wallpaper must move to a new file name, and the
+# screen must show the new picture, not a cached copy of picture-1; 7 install again
+# while the timer runs: the saved wallpaper must not change, and the timer stops
+# before the files are copied; 8 uninstall (restored.png).
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -35,7 +35,6 @@ KEYS=(picture-uri picture-uri-dark picture-options primary-color)
 # The known wallpaper of step 1, as gsettings get prints it. Both pictures are KNOWN_COLOR.
 KNOWN=("'file:///tmp/known-light.png'" "'file:///tmp/known-dark.png'" "'zoom'" "'#336699'")
 KNOWN_COLOR='#3a6b35'
-LIVE_URI="file://$RUNDIR/picture.png"
 BANNER_URI="file://$APPDIR/banner.png"
 status=0
 
@@ -77,14 +76,22 @@ keys_are() {
     return $result
 }
 
-# The keys that the updater sets, without primary-color.
+# live_keys <path>: the keys that the updater sets, without primary-color, point to
+# the live picture <path>, a file picture-<ms>.png in the runtime folder.
 live_keys() {
     local uri dark options
     uri=$(gsettings get "$SCHEMA" picture-uri)
     dark=$(gsettings get "$SCHEMA" picture-uri-dark)
     options=$(gsettings get "$SCHEMA" picture-options)
     echo "#   picture-uri $uri, picture-uri-dark $dark, picture-options $options"
-    [ "$uri" = "'$LIVE_URI'" ] && [ "$dark" = "'$LIVE_URI'" ] && [ "$options" = "'spanned'" ]
+    [[ $1 == "$RUNDIR"/picture-+([0-9]).png ]] &&
+        [ "$uri" = "'file://$1'" ] && [ "$dark" = "'file://$1'" ] && [ "$options" = "'spanned'" ]
+}
+
+# moved_to_new_file <old> <new>: the wallpaper moved to a new file, and the old file is gone.
+moved_to_new_file() {
+    echo "#   old $1, new $2"
+    [ "$1" != "$2" ] && [ ! -e "$1" ] && [ -f "$2" ]
 }
 
 # The saved wallpaper file has the known values.
@@ -208,12 +215,15 @@ take() {
 }
 
 # map_step <n>: runs the service, takes map-<n>.png, and checks it with compare.js.
+# LIVE[n] is the live picture after the run.
+LIVE=()
 map_step() {
     local n=$1 from
     from=$(shell_log_lines)
     check "run $n of the service exits 0" run_unit "$APP.service" "service-$n"
-    check "run $n sets the wallpaper keys to the live picture, spanned" live_keys
-    cp "$RUNDIR/picture.png" "$OUT/picture-$n.png"
+    LIVE[n]=$(state_value state.picture | tr -d '"')
+    check "run $n sets the wallpaper keys to the live picture, spanned" live_keys "${LIVE[n]}"
+    cp "${LIVE[n]}" "$OUT/picture-$n.png"
     state_value state.layout > "$OUT/layout-$n.json"
     take "map-$n"
     check "map-$n.png shows the live picture on each monitor" \
@@ -320,6 +330,9 @@ shell_log_from "$from"
 # oblast color. A cached copy of picture-1 would still show the red alert.
 printf '%s\n' '{"oblasts": [], "raions": []}' | tee "$FIXTURE/alerts-a.json" > "$FIXTURE/alerts-b.json"
 map_step 2
+# The Shell can have a cached copy of the file of run 1 (docs/decisions/2026-10-23-picture-reload-method.md).
+check "step 6: run 2 moved the wallpaper to a new file and deleted the file of run 1" \
+    moved_to_new_file "${LIVE[1]}" "${LIVE[2]}"
 check "step 6: picture-2.png differs from picture-1.png" different_files "$OUT/picture-1.png" "$OUT/picture-2.png"
 check "step 6: map-2.png shows the square without an alert (#223448) on each monitor" \
     indented gjs -m "$HERE/scenarios/square.js" "$OUT/map-2.png" "$OUT/layout-2.json" '#223448'

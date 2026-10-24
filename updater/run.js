@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // One run of the updater (spec 5.4).
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {pictureLayout} from '../core/layout.js';
 import {renderPicture} from '../core/render.js';
 import {acceptAlerts, acceptThreats, buildView, emptyFeed, failFeed, renderKey} from '../core/view.js';
 import {getJson} from './net.js';
 import {loadGeometry, readJson, writeJsonAtomic} from './store.js';
-import {applyLive} from './wallpaper.js';
+import {applyLive, showsPicture} from './wallpaper.js';
 import {DEFAULT_RELOAD_METHOD, writePicture} from './writer.js';
 
 const STATE_VERSION = 1;
@@ -53,6 +54,18 @@ function readLayout(display, saved, warnings) {
     throw new Error(`No monitor layout: ${messageOf(error)}`);
 }
 
+// A new picture path in dir: picture-<now>.png, or picture-<now>-<n>.png if that
+// file exists. GNOME Shell keeps a copy of a picture by its file name, and it does
+// not watch the file while the wallpaper shows another picture (for example the
+// failure banner). A name that the Shell never showed has no old copy
+// (docs/decisions/2026-10-23-picture-reload-method.md).
+function newPicturePath(dir, now) {
+    for (let n = 0; ; n++) {
+        const path = GLib.build_filenamev([dir, n === 0 ? `picture-${now}.png` : `picture-${now}-${n}.png`]);
+        if (!GLib.file_test(path, GLib.FileTest.EXISTS)) return path;
+    }
+}
+
 // A failed request or an invalid response keeps the last valid data and makes it
 // stale. It is never a run error (spec 5.4, step 4).
 function applyResponse(feed, settled, accept) {
@@ -95,11 +108,27 @@ export async function runOnce({session, settings, display, paths, now, base,
 
     const view = buildView(alerts, threats, geometry, now, labelMode);
     const key = renderKey(view, layout, geometryVersion);
-    let picture = state.picture;
-    const drew = key !== state.renderKey || picture === '' ||
-        !GLib.file_test(picture, GLib.FileTest.IS_REGULAR);
-    if (drew)
-        picture = writePicture(renderPicture(layout, geometry, view), paths.runtimeDir, reloadMethod);
+    // The live picture of the last run. Only a file in the runtime folder is ours.
+    const dir = Gio.File.new_for_path(paths.runtimeDir).get_path();
+    const previous = GLib.path_get_dirname(state.picture) === dir ? state.picture : '';
+    const drew = key !== state.renderKey || previous === '' ||
+        !GLib.file_test(previous, GLib.FileTest.IS_REGULAR);
+    const draw = name => writePicture(renderPicture(layout, geometry, view), dir, reloadMethod, name);
+    let picture = previous;
+    if (previous !== '' && showsPicture(settings, GLib.filename_to_uri(previous, null))) {
+        // The Shell watches the file that it shows, so an update keeps the name.
+        if (drew) picture = draw(GLib.path_get_basename(previous));
+    } else {
+        // The wallpaper must move back to the live picture: after the failure banner,
+        // at the first run, or after a change by the user. Use a new file name.
+        const path = newPicturePath(dir, now);
+        if (drew) {
+            picture = draw(GLib.path_get_basename(path));
+        } else {
+            Gio.File.new_for_path(previous).move(Gio.File.new_for_path(path), Gio.FileCopyFlags.NONE, null, null);
+            picture = path;
+        }
+    }
 
     // The picture is good even if the state cannot be saved; the next run then draws again.
     try {
@@ -111,5 +140,14 @@ export async function runOnce({session, settings, display, paths, now, base,
 
     const uri = GLib.filename_to_uri(picture, null);
     applyLive(settings, uri, pictureOptions);
+    // The Shell can have an old copy of the previous file: it must not show that file again.
+    if (previous !== '' && previous !== picture) {
+        try {
+            Gio.File.new_for_path(previous).delete(null);
+        } catch (e) {
+            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
+                warnings.push(`old picture: ${messageOf(e)}`);
+        }
+    }
     return {drew, uri, warnings};
 }

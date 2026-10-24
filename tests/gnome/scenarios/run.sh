@@ -12,8 +12,17 @@ INTERVAL=${GNOME_TEST_INTERVAL:-30}
 DIR=$XDG_RUNTIME_DIR/gnome-air-raid-map
 status=0
 
+# The path of the live picture, from the state file of the updater.
+live_picture() {
+    gjs -c '
+        const GLib = imports.gi.GLib;
+        print(JSON.parse(new TextDecoder().decode(GLib.file_get_contents(ARGV[0])[1])).picture);' \
+        "$DIR/state.json" 2> /dev/null
+}
+
 picture_hash() {
-    [ -f "$DIR/picture.png" ] && md5sum < "$DIR/picture.png"
+    local picture
+    picture=$(live_picture) && [ -f "$picture" ] && md5sum < "$picture"
 }
 
 # One line from the state file of the updater.
@@ -44,7 +53,7 @@ for ((n = 1; n <= RUNS; n++)); do
     echo "#   picture-uri $(gsettings get org.gnome.desktop.background picture-uri)," \
         "picture-options $(gsettings get org.gnome.desktop.background picture-options)"
     sed 's/^/#   stderr: /' "$OUT/run-$n.stderr"
-    cp "$DIR/picture.png" "$OUT/picture-$n.png" 2> /dev/null
+    cp "$(live_picture)" "$OUT/picture-$n.png" 2> /dev/null
     # The Shell shows a new picture in less than 0.4 s (docs/decisions/2026-10-23-picture-reload-method.md).
     sleep 2
     screenshot "$OUT/run-$n.png" || status=1

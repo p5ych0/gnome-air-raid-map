@@ -67,6 +67,23 @@ test('rename replaces picture.png and leaves no temporary file', () => withDir(d
     assertDeepEqual(listDir(dir), ['picture.png']);
 }));
 
+test('in-place and rename write the file name that the caller gives', () => withDir(dir => {
+    assertEqual(writePicture(solid(204, 26, 26), dir, 'in-place', 'picture-1.png'), `${dir}/picture-1.png`);
+    const path = writePicture(solid(26, 26, 204), dir, 'rename', 'picture-2.png');
+    assertEqual(path, `${dir}/picture-2.png`);
+    assertDeepEqual(centerOf(path), [26, 26, 204]);
+    assertEqual(writePicture(solid(26, 204, 26), dir, 'rename', 'picture-2.png'), path);
+    assertDeepEqual(centerOf(path), [26, 204, 26]);
+    assertDeepEqual(listDir(dir), ['picture-1.png', 'picture-2.png']);
+}));
+
+test('a file name with a folder throws and finishes the surface', () => withDir(dir => {
+    const surface = solid(1, 2, 3);
+    assertThrows(() => writePicture(surface, dir, 'rename', 'sub/picture.png'));
+    assertThrows(() => new Cairo.Context(surface), 'the surface is finished');
+    assertDeepEqual(listDir(dir), []);
+}));
+
 test('a failed rename deletes the temporary file', () => withDir(dir => {
     // A non-empty folder named picture.png makes the move fail.
     GLib.mkdir_with_parents(`${dir}/picture.png`, 0o755);

@@ -5,9 +5,10 @@ Date: 2026-10-23. Plan Task 7. Spec section 5.6, "Risk: picture reload".
 ## Decision
 
 The updater writes the picture with **rename** (method `rename`): it writes
-`picture.png.tmp` in `$XDG_RUNTIME_DIR/gnome-air-raid-map/`, renames it over
-`picture.png`, and sets the wallpaper settings only when they do not point
-to the picture. `updater/writer.js` exports
+`<name>.tmp` in `$XDG_RUNTIME_DIR/gnome-air-raid-map/` and renames it over
+the live picture `<name>`. It sets the wallpaper settings only when they do
+not point to the live picture, and then the live picture gets a new name
+(see "Recovery after the failure banner"). `updater/writer.js` exports
 `DEFAULT_RELOAD_METHOD = 'rename'`.
 
 Reason:
@@ -111,16 +112,32 @@ and loads the picture again.
 
 ## Recovery after the failure banner
 
-Checked on 2026-10-24. While the banner shows, the Shell does not watch
-`picture.png`, so the next good run could show a cached copy of the old
-picture, as with `alternate`. Step 6 of `tests/gnome/scenarios/install.sh`
-checks this: before the recovery run, it removes the red alert from the
-fixture data, so the recovered picture is different. After the recovery, the
-screenshot shows the new color `#223448` in the synthetic square on each
-monitor, not the red `#cf4655` of the old picture. This passed in every run:
-Fedora 44 with 1920×1080 and 1080×1920 in one session (3 runs) and with
-1080×1920 alone (1 run), and Ubuntu 24.04 with 1920×1080 (3 runs). So the
-recovery keeps method `rename` and the name `picture.png`.
+Checked on 2026-10-24. While the banner shows, the Shell does not watch the
+live picture file. So when the next good run puts the live picture back under
+the same name, the Shell can show a cached copy of the old picture, as with
+`alternate`. Step 6 of `tests/gnome/scenarios/install.sh` checks this: before
+the recovery run, it removes the red alert from the fixture data, so the
+recovered picture is different. After the recovery, the screenshot must show
+the new color `#223448` in the synthetic square on each monitor, not the red
+`#cf4655` of the old picture.
+
+With the same name (`picture.png`), the check failed once in 17 runs on
+Fedora 44 (1920×1080 and 1080×1920 in one session): both monitors showed the
+old picture with the red alert after the recovery. It passed in 1 run on
+Fedora 44 with 1080×1920 alone and in 9 runs on Ubuntu 24.04 (1920×1080).
+The old picture, not the banner, was on the screen, so the Shell loaded its
+cached copy of `picture.png`.
+
+Decision: when the wallpaper settings do not point to the live picture (after
+the banner, at the first run, or after a change by the user), the updater
+writes the live picture under a new name, `picture-<unix-ms>.png` in the same
+folder, points the settings to it, and deletes the previous live file. The
+Shell never showed the new name, so it has no cached copy of it. A normal
+update, when the settings point to the live picture, keeps the name and the
+`rename` method. `updater/run.js` does this; `tests/unit/test-run.js` tests
+the names. After this change the check passed in 12 of 12 runs on Fedora 44
+(1920×1080 and 1080×1920 in one session) and in 6 of 6 runs on Ubuntu 24.04
+(1920×1080).
 
 ## dconf writes
 

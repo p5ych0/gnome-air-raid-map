@@ -46,7 +46,7 @@ check() {
     code=$?
     sed "s/^/# layout $name: stderr: /" "$OUT/layout-$name.stderr"
     [ $code -eq 0 ] || { echo "# layout $name: the updater exited $code"; return 1; }
-    cp "$DIR/picture.png" "$OUT/picture-$name.png"
+    cp "$(state_value state.picture | tr -d '"')" "$OUT/picture-$name.png"
     state_value state.layout > "$OUT/layout-$name.json"
     # The layout mode of the display state: Mutter's mode, or "logical" for AIR_RAID_MAP_DISPLAY.
     echo "# layout $name: layout mode $(state_value state.displayState.mode)," \

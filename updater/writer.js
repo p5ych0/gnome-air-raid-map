@@ -3,17 +3,16 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-// in-place:  write over picture.png.
-// rename:    write picture.png.tmp, then rename it over picture.png.
-// alternate: write picture-a.png and picture-b.png in turn. The caller sets
-//            picture-uri to the returned path on each update.
+// in-place:  write over <name> (picture.png if the caller gives no name).
+// rename:    write <name>.tmp, then rename it over <name>.
+// alternate: write picture-a.png and picture-b.png in turn, and ignore <name>.
+//            The caller sets picture-uri to the returned path on each update.
 export const RELOAD_METHODS = ['in-place', 'rename', 'alternate'];
 
 // Chosen in docs/decisions/2026-10-23-picture-reload-method.md.
 export const DEFAULT_RELOAD_METHOD = 'rename';
 
 const PICTURE = 'picture.png';
-const TEMPORARY = 'picture.png.tmp';
 const ALTERNATES = ['picture-a.png', 'picture-b.png'];
 // The IEND chunk: the last 12 bytes of every complete PNG file.
 const PNG_END = [0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82];
@@ -50,12 +49,15 @@ function nextAlternate(dir) {
     return modifiedTime(b) < modifiedTime(a) ? b : a;
 }
 
-// Writes the surface as a PNG in dir with the reload method, then finishes the
-// surface (also on an error). Returns the absolute path that the wallpaper must show.
-export function writePicture(surface, dir, method) {
+// Writes the surface as a PNG file `name` in dir with the reload method, then
+// finishes the surface (also on an error). Returns the absolute path that the
+// wallpaper must show.
+export function writePicture(surface, dir, method, name = PICTURE) {
     try {
         if (!RELOAD_METHODS.includes(method))
             throw new Error(`Unknown reload method: ${method}`);
+        if (name === '' || name.includes('/'))
+            throw new Error(`Not a file name: ${name}`);
         const absDir = Gio.File.new_for_path(dir).get_path();
         if (GLib.mkdir_with_parents(absDir, 0o755) !== 0)
             throw new Error(`Cannot create the folder ${absDir}`);
@@ -64,12 +66,12 @@ export function writePicture(surface, dir, method) {
             writePng(surface, path);
             return path;
         }
-        const path = GLib.build_filenamev([absDir, PICTURE]);
+        const path = GLib.build_filenamev([absDir, name]);
         if (method === 'in-place') {
             writePng(surface, path);
             return path;
         }
-        const temporary = Gio.File.new_for_path(GLib.build_filenamev([absDir, TEMPORARY]));
+        const temporary = Gio.File.new_for_path(GLib.build_filenamev([absDir, `${name}.tmp`]));
         try {
             writePng(surface, temporary.get_path());
             temporary.move(Gio.File.new_for_path(path), Gio.FileCopyFlags.OVERWRITE, null, null);

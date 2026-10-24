@@ -59,6 +59,9 @@ async function withRun(fn, serverRoutes = routes()) {
 }
 
 const pathOf = uri => GLib.filename_from_uri(uri)[0];
+const exists = uri => GLib.file_test(pathOf(uri), GLib.FileTest.EXISTS);
+// The URI of the picture file picture-<ms>.png in the runtime folder.
+const pictureUri = (paths, ms) => GLib.filename_to_uri(`${paths.runtimeDir}/picture-${ms}.png`, null);
 
 function pictureSize(uri) {
     const [format, width, height] = GdkPixbuf.Pixbuf.get_file_info(pathOf(uri));
@@ -90,6 +93,19 @@ function hasLoadingMessage(read) {
     return false;
 }
 
+// Points the wallpaper to uri, as another program does (not through the settings
+// object of the updater). The failure unit does this with gsettings.
+function setWallpaper(backend, uri, options) {
+    const other = Gio.Settings.new_with_backend(SCHEMA, backend);
+    other.delay();
+    other.set_string('picture-uri', uri);
+    other.set_string('picture-uri-dark', uri);
+    other.set_string('picture-options', options);
+    other.apply();
+}
+
+const showBanner = backend => setWallpaper(backend, 'file:///banner.png', 'centered');
+
 // Runs the main loop until pending signals (for example, settings changes) are emitted.
 function flushEvents() {
     const context = GLib.MainContext.default();
@@ -99,7 +115,8 @@ function flushEvents() {
 test('first run draws and sets the wallpaper', () => withRun(async ({paths, settings, once}) => {
     const result = await once();
     assertEqual(result.drew, true);
-    assertEqual(result.uri, GLib.filename_to_uri(`${paths.runtimeDir}/picture.png`, null));
+    // The Shell never showed this file name, so it has no old copy of it.
+    assertEqual(result.uri, pictureUri(paths, now));
     assertEqual(settings.get_string('picture-uri'), result.uri);
     assertEqual(settings.get_string('picture-uri-dark'), result.uri);
     assertEqual(settings.get_string('picture-options'), 'spanned');
@@ -124,9 +141,12 @@ test('same minute same data does not draw', () => withRun(async ({once}) => {
     assertEqual(second.uri, first.uri);
 }));
 
-test('a new minute draws again', () => withRun(async ({once}) => {
-    await once();
-    assertEqual((await once({now: now + 60000})).drew, true);
+test('a new minute draws again under the same file name', () => withRun(async ({once}) => {
+    const first = await once();
+    const second = await once({now: now + 60000});
+    assertEqual(second.drew, true);
+    // The Shell watches the file that it shows and loads it again after the rename.
+    assertEqual(second.uri, first.uri);
 }));
 
 test('a missing picture is drawn again', () => withRun(async ({once}) => {
@@ -137,22 +157,63 @@ test('a missing picture is drawn again', () => withRun(async ({once}) => {
     assertDeepEqual(pictureSize(second.uri), [1920, 1080]);
 }));
 
-test('failure banner is replaced by the live picture', () => withRun(async ({backend, settings, once}) => {
-    const first = await once();
-    // The failure unit writes with gsettings, not through the updater's settings object.
-    const banner = Gio.Settings.new_with_backend(SCHEMA, backend);
-    banner.delay();
-    banner.set_string('picture-uri', 'file:///banner.png');
-    banner.set_string('picture-uri-dark', 'file:///banner.png');
-    banner.set_string('picture-options', 'centered');
-    banner.apply();
-    assertEqual(settings.get_string('picture-uri'), 'file:///banner.png');
-    const second = await once({now: now + 20000});
-    assertEqual(second.drew, false);
-    assertEqual(settings.get_string('picture-uri'), first.uri);
-    assertEqual(settings.get_string('picture-uri-dark'), first.uri);
-    assertEqual(settings.get_string('picture-options'), 'spanned');
-}));
+// While the banner shows, the Shell does not watch the live file and can keep an old
+// copy of it. So the live picture comes back under a new file name, and the old file
+// is deleted (docs/decisions/2026-10-23-picture-reload-method.md).
+test('failure banner is replaced by the live picture under a new file name', () =>
+    withRun(async ({backend, paths, settings, once}) => {
+        const first = await once();
+        showBanner(backend);
+        assertEqual(settings.get_string('picture-uri'), 'file:///banner.png');
+        const second = await once({now: now + 20000});
+        assertEqual(second.drew, false, 'the same data is not drawn again');
+        assertEqual(second.uri, pictureUri(paths, now + 20000));
+        assertEqual(settings.get_string('picture-uri'), second.uri);
+        assertEqual(settings.get_string('picture-uri-dark'), second.uri);
+        assertEqual(settings.get_string('picture-options'), 'spanned');
+        assertColorNear(readPicture(second.uri)(...INSIDE), '#cf4655');
+        assertTrue(!exists(first.uri), 'the old file is deleted');
+        assertEqual(readJson(paths.statePath, null).picture, pathOf(second.uri));
+        assertDeepEqual(second.warnings, []);
+    }));
+
+test('new data after the failure banner is drawn under a new file name', () =>
+    withRun(async ({server, backend, paths, settings, once}) => {
+        const first = await once();
+        showBanner(backend);
+        server.setRoute('/api/v1/alerts', {body: JSON.stringify({oblasts: [], raions: []})});
+        const second = await once({now: now + 20000});
+        assertEqual(second.drew, true);
+        assertEqual(second.uri, pictureUri(paths, now + 20000));
+        assertEqual(settings.get_string('picture-uri'), second.uri);
+        assertColorNear(readPicture(second.uri)(...INSIDE), '#223448');
+        assertTrue(!exists(first.uri), 'the old file is deleted');
+    }));
+
+test('a new file name is never the name of an existing file', () =>
+    withRun(async ({backend, paths, settings, once}) => {
+        const first = await once();
+        showBanner(backend);
+        const second = await once();
+        assertEqual(second.uri, GLib.filename_to_uri(`${paths.runtimeDir}/picture-${now}-1.png`, null));
+        assertEqual(settings.get_string('picture-uri'), second.uri);
+        assertTrue(exists(second.uri), 'the new file exists');
+        assertTrue(!exists(first.uri), 'the old file is deleted');
+    }));
+
+test('a picture path outside the runtime folder in the state file is not used', () =>
+    withRun(async ({dir, backend, paths, once}) => {
+        await once();
+        const outside = `${dir}/outside.png`;
+        GLib.file_set_contents(outside, 'not ours');
+        const state = readJson(paths.statePath, null);
+        GLib.file_set_contents(paths.statePath, JSON.stringify({...state, picture: outside}));
+        setWallpaper(backend, GLib.filename_to_uri(outside, null), 'spanned');
+        const second = await once({now: now + 20000});
+        assertEqual(second.drew, true);
+        assertEqual(second.uri, pictureUri(paths, now + 20000));
+        assertTrue(GLib.file_test(outside, GLib.FileTest.EXISTS), 'a file outside the folder is not deleted');
+    }));
 
 test('threat outage draws stale threats and exits normally', () => withRun(async ({server, paths, once}) => {
     await once();
@@ -312,7 +373,8 @@ test('main runs once and exits 0', () => withRun(async ({server, dir}) => {
         AIR_RAID_MAP_API_BASE: server.base, AIR_RAID_MAP_LABEL_MODE: null, AIR_RAID_MAP_PICTURE_OPTIONS: null,
     });
     assertDeepEqual(result, {status: 0, stdout: '', stderr: ''});
-    const picture = `${dir}/run/gnome-air-raid-map/picture.png`;
+    const picture = readJson(`${dir}/run/gnome-air-raid-map/state.json`, null).picture;
+    assertTrue(/^picture-\d+\.png$/.test(GLib.path_get_basename(picture)), `picture: ${picture}`);
     assertDeepEqual(pictureSize(GLib.filename_to_uri(picture, null)), [1280, 720]);
     assertEqual(server.hits.get('/api/v1/alerts'), 1);
 }));
