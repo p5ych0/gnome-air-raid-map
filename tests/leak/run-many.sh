@@ -12,10 +12,11 @@
 # NEPTUN, Mutter or dconf.
 #
 # Output (stdout): one line for each run, "<run> <peak KB> <user s> <sys s> <exit>"
-# (peak KB is the maximum RSS from /usr/bin/time). Lines that start with "#" are
-# notes: du -sb and find | wc -l of each XDG folder after run 10 and after the last
-# run, each file that changed size, the updater processes that are left, and the
-# updater stderr. tests/leak/summarize.js reads this output.
+# (peak KB is the maximum RSS from /usr/bin/time). A run that takes more than 60 s
+# stops with exit 124. Lines that start with "#" are notes: du -sb and find | wc -l
+# of each XDG folder after run 10 and after the last run, each file that changed
+# size, the updater processes that are left, and the updater stderr.
+# tests/leak/summarize.js reads this output.
 #
 # Files check (brief Step 3): du -sb and find | wc -l of each folder after run 10
 # (run 11 if <runs> is odd: the alert payload alternates, so the check run has the
@@ -96,7 +97,10 @@ echo "# $(date -Is) $(gjs --version), display $display, $runs runs, fixture $AIR
 failed=0
 for ((n = 1; n <= runs; n++)); do
     code=0
-    /usr/bin/time -f '%M %U %S' -o "$tmp/time" gjs -m "$repo/updater/main.js" 2>> "$tmp/stderr" || code=$?
+    # timeout stops a run after 60 s, so a run that hangs cannot stop the check. Such a
+    # run exits 124. The wait4() rusage of timeout includes gjs, its child, so %M is
+    # still the peak of gjs, and %U and %S include the CPU time of gjs.
+    /usr/bin/time -f '%M %U %S' -o "$tmp/time" timeout 60 gjs -m "$repo/updater/main.js" 2>> "$tmp/stderr" || code=$?
     # After a non-zero exit, /usr/bin/time writes a "Command exited" line first.
     echo "$n $(tail -n 1 "$tmp/time") $code"
     [ $code -eq 0 ] || failed=$((failed + 1))
