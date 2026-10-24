@@ -396,6 +396,32 @@ test('the picture that the settings show survives a run that cannot apply', () =
         assertTrue(pictureFiles(paths).length <= 2, pictureFiles(paths).join(' '));
     }));
 
+test('a file that the sweep cannot delete is one warning, not an error', () =>
+    withRun(async ({paths, once}) => {
+        // unlink(2) fails on a folder.
+        GLib.mkdir_with_parents(`${paths.runtimeDir}/picture-444.png`, 0o700);
+        const result = await once();
+        assertTrue(result.drew, 'the run did not draw');
+        const warnings = result.warnings.filter(w => w.startsWith('old file:'));
+        assertEqual(warnings.length, 1, result.warnings.join(' | '));
+        assertTrue(warnings[0].includes('picture-444.png'), warnings[0]);
+    }));
+
+test('the picture that picture-uri-dark shows survives a run that draws', () =>
+    withRun(async ({backend, paths, settings, once}) => {
+        GLib.mkdir_with_parents(paths.runtimeDir, 0o700);
+        const dark = `${paths.runtimeDir}/picture-222.png`;
+        GLib.file_set_contents(dark, 'x');
+        GLib.file_set_contents(`${paths.runtimeDir}/picture-333.png`, 'x');
+        setWallpaper(backend, 'file:///banner.png', 'centered');
+        const other = Gio.Settings.new_with_backend(SCHEMA, backend);
+        other.set_string('picture-uri-dark', GLib.filename_to_uri(dark, null));
+        const result = await once();
+        assertTrue(result.drew, 'the run did not draw');
+        assertTrue(GLib.file_test(dark, GLib.FileTest.EXISTS), 'the picture of picture-uri-dark was deleted');
+        assertEqual(settings.get_string('picture-uri'), result.uri);
+    }));
+
 // Runs argv in a new process; env sets its variables (null removes one).
 async function spawn(argv, env) {
     const launcher = new Gio.SubprocessLauncher({

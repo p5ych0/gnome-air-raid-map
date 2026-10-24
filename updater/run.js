@@ -67,22 +67,27 @@ function newPicturePath(dir, now) {
 }
 
 // Deletes every picture*.png and *.tmp in dir except the paths in keep. A leftover
-// comes from a run that failed or was killed. Only dir is touched.
-function sweepRuntimeDir(dir, keep) {
+// comes from a run that failed or was killed. Only dir is touched. A file that
+// cannot be deleted is one warning in warnings, not an error.
+function sweepRuntimeDir(dir, keep, warnings) {
     let names;
     try {
         names = Gio.File.new_for_path(dir).enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
     } catch (e) {
         return;
     }
-    for (let info = names.next_file(null); info !== null; info = names.next_file(null)) {
-        const name = info.get_name();
-        const path = GLib.build_filenamev([dir, name]);
-        const ours = (name.startsWith('picture') && name.endsWith('.png')) || name.endsWith('.tmp');
-        if (!ours || keep.has(path)) continue;
-        GLib.unlink(path);
+    try {
+        for (let info = names.next_file(null); info !== null; info = names.next_file(null)) {
+            const name = info.get_name();
+            const path = GLib.build_filenamev([dir, name]);
+            const ours = (name.startsWith('picture') && name.endsWith('.png')) || name.endsWith('.tmp');
+            if (!ours || keep.has(path)) continue;
+            if (GLib.unlink(path) !== 0 && GLib.file_test(path, GLib.FileTest.EXISTS | GLib.FileTest.IS_SYMLINK))
+                warnings.push(`old file: cannot delete ${path}`);
+        }
+    } finally {
+        names.close(null);
     }
-    names.close(null);
 }
 
 const onScreenPath = uri => {
@@ -143,7 +148,7 @@ export async function runOnce({session, settings, display, paths, now, base,
     const draw = name => writePicture(renderPicture(layout, geometry, view), dir, reloadMethod, name);
     let picture = previous;
     // The picture on screen now: the sweep below keeps it until the Shell has the new one.
-    const onScreen = settings.get_string('picture-uri');
+    const onScreen = ['picture-uri', 'picture-uri-dark'].map(key => onScreenPath(settings.get_string(key)));
     try {
         if (previous !== '' && showsPicture(settings, GLib.filename_to_uri(previous, null))) {
             // The Shell watches the file that it shows, so an update keeps the name.
@@ -181,6 +186,6 @@ export async function runOnce({session, settings, display, paths, now, base,
         return {drew, uri, warnings};
     } finally {
         // Whatever failed above, no file of this run or of a killed run stays behind.
-        if (drew) sweepRuntimeDir(dir, new Set([picture, onScreenPath(onScreen)]));
+        if (drew) sweepRuntimeDir(dir, new Set([picture, ...onScreen]), warnings);
     }
 }
