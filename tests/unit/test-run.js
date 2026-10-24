@@ -421,7 +421,7 @@ async function stateWithOffScreenSavedPicture({backend, settings, paths, once}) 
 
 // A run that draws writes its temporary file next to the pictures that the keys show.
 // The saved picture B that no key shows must be gone before the write starts: after a
-// kill during the write, the folder then holds at most the two on-screen files and
+// kill during the write, the folder then holds the picture that picture-uri shows and
 // the new file. An unknown reload method makes writePicture throw before it makes a file.
 test('a run that draws deletes the saved picture that no key shows before it writes', () =>
     withRun(async context => {
@@ -429,7 +429,7 @@ test('a run that draws deletes the saved picture that no key shows before it wri
         const {a, b} = await stateWithOffScreenSavedPicture(context);
         assertTrue(GLib.file_test(b, GLib.FileTest.EXISTS), 'the failed run left no saved picture');
         server.setRoute('/api/v1/alerts', {body: JSON.stringify({oblasts: [], raions: []})});
-        await assertRejects(context.once({now: now + 40000, reloadMethod: 'none'}), /./);
+        await assertRejects(context.once({now: now + 40000, reloadMethod: 'none'}), /^Unknown reload method: none$/);
         assertTrue(GLib.file_test(a, GLib.FileTest.EXISTS), 'the picture that picture-uri shows was deleted');
         assertTrue(!GLib.file_test(b, GLib.FileTest.EXISTS), 'the saved picture that no key shows is still there');
         assertDeepEqual(pictureFiles(paths), [GLib.path_get_basename(a)]);

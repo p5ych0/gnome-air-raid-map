@@ -166,7 +166,7 @@ export async function runOnce({session, settings, display, paths, now, base,
     // Earlier runs that were killed can have left files: delete them before this run
     // makes new ones. A run that draws keeps only the files on screen: the saved picture
     // that no key shows goes too, so a write starts with the on-screen files only. A run
-    // that does not draw keeps the saved picture, because it renames that file.
+    // that does not draw keeps the saved picture: it renames that file, or a key shows it.
     sweepRuntimeDir(dir, new Set([...onScreen, ...(drew ? [] : [previous])].filter(p => p !== '')), warnings);
     try {
         if (showsPrevious) {
