@@ -48,8 +48,10 @@ export function writeJsonAtomic(path, value) {
 const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, text, -1);
 
 // The prepared entry of a boundary file: the prepareGeometry result for one version of
-// the file, next to the file (<name>.prepared). Parsing and projecting the GeoJSON took
-// about 13 ms of each run; reading this entry takes about 4 ms (Task 11b). Layout:
+// the file, next to the file (<name>.prepared). With the entry, a run does not parse and
+// project the GeoJSON, but it still reads, decodes and hashes the text of the file. In
+// Task 11b the boundary steps of a run then took 11.5 ms of CPU time, not 17 ms: about
+// 5 ms less for each run. Layout:
 //   64 bytes   the SHA-256 (hex) of all bytes after it
 //   4 bytes    the header length H, little-endian
 //   H bytes    the header, JSON: the format, the version of the file, the code version,
