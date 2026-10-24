@@ -402,6 +402,53 @@ test('a locked key keeps the picture that the other key still shows', () =>
         assertTrue(pictureFiles(paths).length <= 2, pictureFiles(paths).join(' '));
     }));
 
+// The state of a run that failed on a locked key: the saved picture B is one that no key
+// shows, picture-uri still shows A, and picture-uri-dark shows another file. Returns
+// {a, b}, the paths of A and B.
+async function stateWithOffScreenSavedPicture({backend, settings, paths, once}) {
+    const first = await once();
+    setWallpaper(backend, first.uri, 'spanned');
+    Gio.Settings.new_with_backend(SCHEMA, backend).set_string('picture-uri-dark', 'file:///other.png');
+    Gio.Settings.sync();
+    const locked = {
+        get_string: key => settings.get_string(key),
+        is_writable: key => key !== 'picture-uri-dark',
+        delay() {}, set_string() {}, apply() {},
+    };
+    await assertRejects(once({settings: locked, now: now + 20000}), /is not writable$/);
+    return {a: pathOf(first.uri), b: pathOf(pictureUri(paths, now + 20000))};
+}
+
+// A run that draws writes its temporary file next to the pictures that the keys show.
+// The saved picture B that no key shows must be gone before the write starts: after a
+// kill during the write, the folder then holds at most the two on-screen files and
+// the new file. An unknown reload method makes writePicture throw before it makes a file.
+test('a run that draws deletes the saved picture that no key shows before it writes', () =>
+    withRun(async context => {
+        const {server, paths} = context;
+        const {a, b} = await stateWithOffScreenSavedPicture(context);
+        assertTrue(GLib.file_test(b, GLib.FileTest.EXISTS), 'the failed run left no saved picture');
+        server.setRoute('/api/v1/alerts', {body: JSON.stringify({oblasts: [], raions: []})});
+        await assertRejects(context.once({now: now + 40000, reloadMethod: 'none'}), /./);
+        assertTrue(GLib.file_test(a, GLib.FileTest.EXISTS), 'the picture that picture-uri shows was deleted');
+        assertTrue(!GLib.file_test(b, GLib.FileTest.EXISTS), 'the saved picture that no key shows is still there');
+        assertDeepEqual(pictureFiles(paths), [GLib.path_get_basename(a)]);
+    }));
+
+// The sweep deletes B before the write. If the run chose the name of its new picture
+// after the sweep, it could take B's name, and the Shell can have an old copy of that
+// name (docs/decisions/2026-10-23-picture-reload-method.md).
+test('the new picture never takes the name of a file that the sweep deletes', () =>
+    withRun(async context => {
+        const {server} = context;
+        const {b} = await stateWithOffScreenSavedPicture(context);
+        server.setRoute('/api/v1/alerts', {body: JSON.stringify({oblasts: [], raions: []})});
+        // The same time as the run that made B, and other data.
+        const result = await context.once({now: now + 20000});
+        assertTrue(result.drew, 'the run did not draw');
+        assertTrue(pathOf(result.uri) !== b, `the new picture took the name ${b}`);
+    }));
+
 // An earlier run that was killed (for example during a PNG write) never reached its
 // sweep. A run that does not draw must delete what it left.
 test('a run that does not draw removes leftovers of a killed run', () =>

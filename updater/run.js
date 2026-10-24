@@ -160,9 +160,14 @@ export async function runOnce({session, settings, display, paths, now, base,
         (!showsPrevious && onScreen.includes(previous));
     const draw = name => writePicture(renderPicture(layout, geometry, view), dir, reloadMethod, name);
     let picture = previous;
+    // The new file name comes before the sweep, so that the run cannot take the name of a
+    // file that the sweep deletes.
+    const path = showsPrevious ? '' : newPicturePath(dir, now);
     // Earlier runs that were killed can have left files: delete them before this run
-    // makes new ones.
-    sweepRuntimeDir(dir, new Set([previous, ...onScreen].filter(path => path !== '')), warnings);
+    // makes new ones. A run that draws keeps only the files on screen: the saved picture
+    // that no key shows goes too, so a write starts with the on-screen files only. A run
+    // that does not draw keeps the saved picture, because it renames that file.
+    sweepRuntimeDir(dir, new Set([...onScreen, ...(drew ? [] : [previous])].filter(p => p !== '')), warnings);
     try {
         if (showsPrevious) {
             // The Shell watches the file that it shows, so an update keeps the name.
@@ -170,7 +175,6 @@ export async function runOnce({session, settings, display, paths, now, base,
         } else {
             // The wallpaper must move back to the live picture: after the failure banner,
             // at the first run, or after a change by the user. Use a new file name.
-            const path = newPicturePath(dir, now);
             if (drew) {
                 picture = draw(GLib.path_get_basename(path));
             } else {
