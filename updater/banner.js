@@ -7,7 +7,7 @@ import Gio from 'gi://Gio';
 import PangoCairo from 'gi://PangoCairo';
 import System from 'system';
 import {parseColor, parseFont} from '../core/canvas.js';
-import {writePng} from './writer.js';
+import {removeFile, renameFile, writePng} from './writer.js';
 
 const WIDTH = 1200, HEIGHT = 360;
 // The map background (core/render.js) and the primary-color of the failure unit.
@@ -29,8 +29,8 @@ function setColor(cr, css) {
 // so GNOME never shows a half-written banner. Throws if it cannot write the file.
 export function drawBanner(path) {
     const surface = new Cairo.ImageSurface(Cairo.Format.RGB24, WIDTH, HEIGHT);
+    const cr = new Cairo.Context(surface);
     try {
-        const cr = new Cairo.Context(surface);
         setColor(cr, BACKGROUND);
         cr.paint();
         const layouts = LINES.map(({text, font}) => {
@@ -61,23 +61,21 @@ export function drawBanner(path) {
             setColor(cr, LINES[i].color);
             cr.fill();
         });
-        cr.$dispose();
 
-        const target = Gio.File.new_for_path(path);
-        const temporary = Gio.File.new_for_path(`${target.get_path()}.tmp`);
+        const temporary = `${path}.tmp`;
         try {
-            writePng(surface, temporary.get_path());
-            temporary.move(target, Gio.FileCopyFlags.OVERWRITE, null, null);
+            writePng(surface, temporary);
+            renameFile(temporary, path);
         } catch (e) {
             try {
-                temporary.delete(null);
-            } catch (deleteError) {
-                if (!deleteError.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
-                    logError(deleteError, `Cannot delete ${temporary.get_path()}`);
+                removeFile(temporary);
+            } catch (removeError) {
+                logError(removeError);
             }
             throw e;
         }
     } finally {
+        cr.$dispose();
         surface.finish();
     }
 }
