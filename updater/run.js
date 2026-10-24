@@ -8,7 +8,7 @@ import {acceptAlerts, acceptThreats, buildView, emptyFeed, failFeed, renderKey} 
 import {getJson} from './net.js';
 import {loadGeometry, readJson, writeJsonAtomic} from './store.js';
 import {applyLive, showsPicture} from './wallpaper.js';
-import {DEFAULT_RELOAD_METHOD, writePicture} from './writer.js';
+import {DEFAULT_RELOAD_METHOD, removeFile, renameFile, writePicture} from './writer.js';
 
 const STATE_VERSION = 1;
 
@@ -125,7 +125,7 @@ export async function runOnce({session, settings, display, paths, now, base,
         if (drew) {
             picture = draw(GLib.path_get_basename(path));
         } else {
-            Gio.File.new_for_path(previous).move(Gio.File.new_for_path(path), Gio.FileCopyFlags.NONE, null, null);
+            renameFile(previous, path);
             picture = path;
         }
     }
@@ -143,10 +143,9 @@ export async function runOnce({session, settings, display, paths, now, base,
     // The Shell can have an old copy of the previous file: it must not show that file again.
     if (previous !== '' && previous !== picture) {
         try {
-            Gio.File.new_for_path(previous).delete(null);
+            removeFile(previous);
         } catch (e) {
-            if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
-                warnings.push(`old picture: ${messageOf(e)}`);
+            warnings.push(`old picture: ${messageOf(e)}`);
         }
     }
     return {drew, uri, warnings};

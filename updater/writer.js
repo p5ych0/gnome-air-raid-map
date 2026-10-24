@@ -43,6 +43,22 @@ function modifiedTime(path) {
     }
 }
 
+// rename(2) and unlink(2). Do not use Gio.File.move or Gio.File.delete for the
+// files of a run: with GVfs, GIO then also sends a metadata call, and
+// gvfsd-metadata writes ~/.local/share/gvfs-metadata on the home disk at each
+// update (Task 11: about 30 KB per run). The picture is in RAM so that repeated
+// writes do not wear the disk (spec 5.5).
+export function renameFile(from, to) {
+    if (GLib.rename(from, to) !== 0)
+        throw new Error(`Cannot rename ${from} to ${to}`);
+}
+
+// Deletes the file at path. A missing file is not an error.
+export function removeFile(path) {
+    if (GLib.unlink(path) !== 0 && GLib.file_test(path, GLib.FileTest.EXISTS | GLib.FileTest.IS_SYMLINK))
+        throw new Error(`Cannot delete ${path}`);
+}
+
 // The file that GNOME does not show now: a missing file, or the older file.
 function nextAlternate(dir) {
     const [a, b] = ALTERNATES.map(name => GLib.build_filenamev([dir, name]));
@@ -71,16 +87,16 @@ export function writePicture(surface, dir, method, name = PICTURE) {
             writePng(surface, path);
             return path;
         }
-        const temporary = Gio.File.new_for_path(GLib.build_filenamev([absDir, `${name}.tmp`]));
+        // The temporary file is in the same folder, so the rename is atomic.
+        const temporary = GLib.build_filenamev([absDir, `${name}.tmp`]);
         try {
-            writePng(surface, temporary.get_path());
-            temporary.move(Gio.File.new_for_path(path), Gio.FileCopyFlags.OVERWRITE, null, null);
+            writePng(surface, temporary);
+            renameFile(temporary, path);
         } catch (e) {
             try {
-                temporary.delete(null);
-            } catch (deleteError) {
-                if (!deleteError.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND))
-                    logError(deleteError, `Cannot delete ${temporary.get_path()}`);
+                removeFile(temporary);
+            } catch (removeError) {
+                logError(removeError);
             }
             throw e;
         }

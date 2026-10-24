@@ -11,6 +11,13 @@ not point to the live picture, and then the live picture gets a new name
 (see "Recovery after the failure banner"). `updater/writer.js` exports
 `DEFAULT_RELOAD_METHOD = 'rename'`.
 
+The rename is a plain rename(2) (`GLib.rename`), not `Gio.File.move`. With
+GVfs, `Gio.File.move` and `Gio.File.delete` also send a metadata call, and
+gvfsd-metadata then writes `~/.local/share/gvfs-metadata` on the home disk at
+each update (Task 11: about 30 KB per run). The kernel sends the same file
+events for both, so the Shell reloads the picture in the same way (see
+"Plain rename").
+
 Reason:
 
 - `in-place` and `rename` both passed 100 of 100 updates on both images.
@@ -138,6 +145,30 @@ update, when the settings point to the live picture, keeps the name and the
 the names. After this change the check passed in 12 of 12 runs on Fedora 44
 (1920×1080 and 1080×1920 in one session) and in 6 of 6 runs on Ubuntu 24.04
 (1920×1080).
+
+## Plain rename
+
+Checked on 2026-10-24 (Task 11 finding). The updater first renamed the
+picture with `Gio.File.move`. With GVfs, GIO then also sends a metadata call
+to gvfsd-metadata, which writes `~/.local/share/gvfs-metadata` on the home
+disk. `updater/writer.js` now uses `GLib.rename` (rename(2)) and
+`GLib.unlink`; `updater/run.js` uses them for the recovery name too.
+
+`tests/gnome/run.sh <image> reload` with `GNOME_TEST_METHODS=rename` (100
+updates) after the change: 100/100 on Fedora 44 and 100/100 on Ubuntu 24.04,
+first new color at 250 ms. The Shell reloads after a plain rename as before.
+
+GVfs metadata (gvfsd-metadata `write_bytes`), Fedora 44, 20 updates after
+the session settled for 180 s (the image has no GVfs on Ubuntu 24.04):
+
+| Writer | Bytes in 20 updates | Journal entries for the picture |
+|---|---|---|
+| `Gio.File.move` | 65,536 | 63 |
+| `GLib.rename` | 0 | 0 |
+
+In the first 2 minutes of a session, gvfsd-metadata also writes for other
+programs (the glycin image loader and the Evolution calendar), with or
+without the updater. So a measurement must wait for this.
 
 ## dconf writes
 

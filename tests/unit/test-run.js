@@ -352,8 +352,8 @@ test('a locked wallpaper is a run error', () => withRun(async ({dir, once}) => {
     await assertLocked(once({settings: lockedSettings(dir)}));
 }));
 
-// main.js runs in a new process; env sets its variables (null removes one).
-async function runMain(env) {
+// Runs argv in a new process; env sets its variables (null removes one).
+async function spawn(argv, env) {
     const launcher = new Gio.SubprocessLauncher({
         flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
     });
@@ -361,10 +361,13 @@ async function runMain(env) {
         if (value === null) launcher.unsetenv(name);
         else launcher.setenv(name, value, true);
     }
-    const process = launcher.spawnv(['gjs', '-m', pathOf(MAIN)]);
+    const process = launcher.spawnv(argv);
     const [stdout, stderr] = await process.communicate_utf8_async(null, null);
     return {status: process.get_exit_status(), stdout, stderr};
 }
+
+// main.js runs in a new process.
+const runMain = env => spawn(['gjs', '-m', pathOf(MAIN)], env);
 
 // The variables of main.js for a run in dir against the fixture server.
 const mainEnv = (dir, server) => ({
@@ -380,6 +383,43 @@ test('main runs once and exits 0', () => withRun(async ({server, dir}) => {
     assertTrue(/^picture-\d+\.png$/.test(GLib.path_get_basename(picture)), `picture: ${picture}`);
     assertDeepEqual(pictureSize(GLib.filename_to_uri(picture, null)), [1280, 720]);
     assertEqual(server.hits.get('/api/v1/alerts'), 1);
+}));
+
+// GIO sends a GVfs metadata call for Gio.File.move and Gio.File.delete, and
+// gvfsd-metadata then writes $XDG_DATA_HOME/gvfs-metadata on the home disk. The
+// picture is in RAM so that repeated writes do not wear the disk (spec 5.5), so a
+// run renames and deletes its files with rename(2) and unlink(2). The check needs
+// a session bus with GVfs: dbus-run-session starts one, and a probe with
+// Gio.File.move shows whether GVfs writes metadata on this machine.
+test('runs write no GVfs metadata', () => withRun(async ({server, dir}) => {
+    const inSession = argv => ['dbus-run-session', '--', ...argv];
+    if (!GLib.find_program_in_path('dbus-run-session')) {
+        print('# skip: no dbus-run-session, so no GVfs metadata check');
+        return;
+    }
+    GLib.mkdir_with_parents(`${dir}/probe`, 0o700);
+    GLib.file_set_contents(`${dir}/probe/a`, 'a');
+    await spawn(inSession(['gjs', '-c', `const Gio = imports.gi.Gio;
+        Gio.File.new_for_path(ARGV[0]).move(Gio.File.new_for_path(ARGV[1]), Gio.FileCopyFlags.NONE, null, null);`,
+    `${dir}/probe/a`, `${dir}/probe/b`]), {XDG_DATA_HOME: `${dir}/probe-data`});
+    if (!GLib.file_test(`${dir}/probe-data/gvfs-metadata`, GLib.FileTest.IS_DIR)) {
+        print('# skip: GVfs writes no metadata here (no GVfs, or no session bus)');
+        return;
+    }
+    // Run 1 draws. Run 2 starts with the default settings (memory backend), so it
+    // puts the live picture back under a new name and deletes the old file.
+    const env = mainEnv(dir, server);
+    for (const n of [1, 2]) {
+        const result = await spawn(inSession(['gjs', '-m', pathOf(MAIN)]), env);
+        assertEqual(result.status, 0, `run ${n}: ${result.stderr}`);
+    }
+    assertTrue(!GLib.file_test(`${dir}/data/gvfs-metadata`, GLib.FileTest.EXISTS), 'GVfs wrote metadata');
+    const files = [];
+    const children = Gio.File.new_for_path(`${dir}/run/gnome-air-raid-map`).enumerate_children(
+        'standard::name', Gio.FileQueryInfoFlags.NONE, null);
+    for (let info = children.next_file(null); info; info = children.next_file(null))
+        files.push(info.get_name());
+    assertDeepEqual(files.filter(name => name !== 'state.json').length, 1, `files: ${files}`);
 }));
 
 // A damaged state file, or a state file of another version, gives the start state:

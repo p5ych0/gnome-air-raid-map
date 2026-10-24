@@ -67,6 +67,30 @@ test('rename replaces picture.png and leaves no temporary file', () => withDir(d
     assertDeepEqual(listDir(dir), ['picture.png']);
 }));
 
+// rename(2) in one folder: picture.png is a new file at once, and the old file loses
+// its name. A reader that opened the old file still reads the whole old picture.
+test('rename replaces the picture atomically with a new file', () => withDir(dir => {
+    const path = writePicture(solid(204, 26, 26), dir, 'rename');
+    const reader = Gio.File.new_for_path(path).read(null);
+    try {
+        const old = reader.query_info('unix::inode,unix::nlink', null);
+        assertEqual(old.get_attribute_uint32('unix::nlink'), 1);
+        writePicture(solid(26, 26, 204), dir, 'rename');
+        const info = Gio.File.new_for_path(path).query_info('unix::inode', Gio.FileQueryInfoFlags.NONE, null);
+        assertTrue(info.get_attribute_uint64('unix::inode') !== old.get_attribute_uint64('unix::inode'),
+            'picture.png is a new file');
+        assertEqual(reader.query_info('unix::nlink', null).get_attribute_uint32('unix::nlink'), 0,
+            'the old file has no name');
+        const pixbuf = GdkPixbuf.Pixbuf.new_from_stream(reader, null);
+        const pixel = pixbuf.new_subpixbuf(pixbuf.get_width() >> 1, pixbuf.get_height() >> 1, 1, 1).get_pixels();
+        assertDeepEqual([pixel[0], pixel[1], pixel[2]], [204, 26, 26], 'the reader of the old file');
+        assertDeepEqual(centerOf(path), [26, 26, 204]);
+        assertDeepEqual(listDir(dir), ['picture.png'], 'no temporary file');
+    } finally {
+        reader.close(null);
+    }
+}));
+
 test('in-place and rename write the file name that the caller gives', () => withDir(dir => {
     assertEqual(writePicture(solid(204, 26, 26), dir, 'in-place', 'picture-1.png'), `${dir}/picture-1.png`);
     const path = writePicture(solid(26, 26, 204), dir, 'rename', 'picture-2.png');
