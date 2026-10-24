@@ -23,13 +23,14 @@
 # changes the folder of an earlier run. The script refuses to start while the
 # containers of another soak run.
 # soak.log: a "soak: <time> <elapsed> elapsed; ..." checkpoint line every
-# GNOME_TEST_SOAK_CHECKPOINT s (default 600); at once (checked every 30 s):
-# "soak: ... FAIL: ..." when a container stops early or gnome-shell is gone (the
-# script then removes all containers and exits 1), and "soak: ... NOTE: ..." for each
-# updater run that did not succeed; "soak: ... done" at the end. If the script stops
-# early (a signal, an error), it writes "FAIL: soak.sh stopped" and the file
-# <folder>/aborted, and removes the containers. After a SIGKILL, it cannot: the
-# containers then still stop themselves after <seconds>.
+# GNOME_TEST_SOAK_CHECKPOINT s (default 600); at once (checked every
+# GNOME_TEST_SOAK_POLL s, default 30): "soak: ... FAIL: ..." when a container stops
+# early, gnome-shell is gone, or the last sample of a running sampler is older than
+# 150 s (the script then removes all containers and exits 1), and
+# "soak: ... NOTE: ..." for each updater run that did not succeed; "soak: ... done"
+# at the end. If the script stops early (a signal, an error), it writes "FAIL:
+# soak.sh stopped" and the file <folder>/aborted, and removes the containers. After
+# a SIGKILL, it cannot: the containers then still stop themselves after <seconds>.
 # Exit status 0 if all containers ran for the whole time.
 set -u -o pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +39,10 @@ IMAGE=fedora44
 ROLES=(updater updater-unchanged control)
 UPDATER_ROLES=(updater updater-unchanged)
 CHECKPOINT=${GNOME_TEST_SOAK_CHECKPOINT:-600}
+POLL=${GNOME_TEST_SOAK_POLL:-30}
+# The sampler writes a sample every 60 s. summarize.js fails a gap above 150 s
+# (MAX_SAMPLE_GAP_S), so the watcher reports it at once.
+MAX_SAMPLE_AGE=150
 PREFIX=gnome-air-raid-map-soak-
 
 [ $# -eq 1 ] && [[ $1 =~ ^[1-9][0-9]*$ ]] || { echo "usage: $0 <seconds>" >&2; exit 2; }
@@ -160,15 +165,27 @@ declare -A done_role=() reported=()
 while [ ${#done_role[@]} -lt ${#ROLES[@]} ]; do
     # In the background, so that a signal stops the wait at once: bash runs a trap
     # only after the foreground command ends.
-    sleep 30 &
+    sleep "$POLL" &
     wait $!
     printed=0
     for role in "${ROLES[@]}"; do
         [ -z "${done_role[$role]:-}" ] || continue
         if running "${container[$role]}"; then
-            if [ "$(cut -f3 <<< "$(last_line "$(out_of "$role")/samples.tsv")")" = 0 ]; then
+            line=$(last_line "$(out_of "$role")/samples.tsv")
+            if [ "$(cut -f3 <<< "$line")" = 0 ]; then
                 log "FAIL: $role: gnome-shell is not running (last sample)"
                 failed=1
+            fi
+            # A sampler that stops writes no new samples, but its container keeps running:
+            # only the sampler stops it. After "sampler end" no sample comes while the
+            # container stops, and that is not a failure.
+            epoch=$(cut -f1 <<< "$line")
+            if [[ $epoch =~ ^[0-9]+$ ]] && ! sampler_ended "$role"; then
+                age=$(($(date +%s) - epoch))
+                if [ $age -gt $MAX_SAMPLE_AGE ]; then
+                    log "FAIL: $role: the sampler stopped (the last sample is $age s old, more than $MAX_SAMPLE_AGE s)"
+                    failed=1
+                fi
             fi
         elif sampler_ended "$role"; then
             done_role[$role]=1
