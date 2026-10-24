@@ -490,8 +490,10 @@ Checks:
 5. During the 24-hour run, record the PSS and CPU time of `gnome-shell` every
    minute. Compare with a 24-hour run of the same GNOME session without the
    updater. Pass: `gnome-shell` PSS has no upward trend that the control run
-   does not have, and the updater adds less than 1 % of one core to
-   `gnome-shell` CPU on average.
+   does not have, and the updater adds less than 1 % of one core to the CPU
+   of the Shell service on average. The Shell service counts `gnome-shell`
+   with its children, because a picture update starts the glycin image
+   loaders as children of the Shell.
 
 ## 8. Development process
 
