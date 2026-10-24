@@ -100,10 +100,17 @@ install_app() {
     # 4. The failure banner.
     "$gjs" -m "$APPDIR/updater/banner.js" "$APPDIR/banner.png"
 
-    # 5. The timer.
+    # 5. The timer. Without a graphical session (for example over SSH or on a
+    # text console) every run fails, so only enable the timer: it starts with
+    # graphical-session.target at the next graphical login.
     systemctl --user daemon-reload
-    systemctl --user enable --now "$TIMER"
-    echo "$APP: installed. The wallpaper shows the map within a few seconds."
+    if systemctl --user is-active --quiet graphical-session.target; then
+        systemctl --user enable --now "$TIMER"
+        echo "$APP: installed. The wallpaper shows the map within a few seconds."
+    else
+        systemctl --user enable "$TIMER"
+        echo "$APP: installed. No graphical session runs now: the map starts at the next graphical login."
+    fi
     echo "$APP: to uninstall, run: $0 --uninstall"
 }
 

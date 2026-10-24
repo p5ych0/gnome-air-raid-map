@@ -12,7 +12,8 @@
 # the service again (map-2.png): the wallpaper must move to a new file name, and the
 # screen must show the new picture, not a cached copy of picture-1; 7 install again
 # while the timer runs: the saved wallpaper must not change, and the timer stops
-# before the files are copied; 8 uninstall (restored.png).
+# before the files are copied; 8 uninstall (restored.png); 9 install without a
+# graphical session: enable the timer, but do not start it.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
 # Files: map-<n>.png, banner.png, restored.png (screenshots), picture-<n>.png and
@@ -257,6 +258,8 @@ STUB_END
 printf '%s\n' '#!/bin/sh' '# Write the arguments to the log, then run the real gsettings.' \
     "echo \"gsettings \$*\" >> '$OUT/calls.log'" "exec '$GSETTINGS' \"\$@\"" > "$GSTUB/gsettings"
 chmod +x "$STUB/systemctl" "$GSTUB/gsettings"
+# A graphical session runs, until step 9.
+touch "$STUB/active/graphical-session.target"
 : > "$OUT/calls.log"
 export PATH="$STUB:$PATH"
 
@@ -300,7 +303,8 @@ check "step 3: the saved wallpaper has the known values" saved_known
 cp "$STATEDIR/previous-wallpaper" "$OUT/previous-wallpaper"
 check "step 3: systemctl got daemon-reload, then enable --now $APP.timer" calls_are \
     'systemctl --user show-environment' "systemctl --user is-active --quiet $APP.timer" \
-    'systemctl --user daemon-reload' "systemctl --user enable --now $APP.timer"
+    'systemctl --user daemon-reload' 'systemctl --user is-active --quiet graphical-session.target' \
+    "systemctl --user enable --now $APP.timer"
 
 # Step 4: the live map. The fixture data has a red alert on the synthetic square.
 map_step 1
@@ -346,7 +350,8 @@ check "step 7: a second install.sh exits 0" install_run install-2
 check "step 7: the saved wallpaper did not change" same_file "$OUT/previous-wallpaper" "$STATEDIR/previous-wallpaper"
 check "step 7: systemctl got stop $APP.timer before daemon-reload, then enable --now" calls_are \
     'systemctl --user show-environment' "systemctl --user is-active --quiet $APP.timer" \
-    "systemctl --user stop $APP.timer" 'systemctl --user daemon-reload' "systemctl --user enable --now $APP.timer"
+    "systemctl --user stop $APP.timer" 'systemctl --user daemon-reload' \
+    'systemctl --user is-active --quiet graphical-session.target' "systemctl --user enable --now $APP.timer"
 
 # Step 8: uninstall.
 : > "$OUT/calls.log"
@@ -374,6 +379,18 @@ check "step 8: restored.png shows the known wallpaper on each monitor" \
     indented gjs -m "$HERE/scenarios/centered.js" "$OUT/restored.png" "$OUT/monitors.json" "$KNOWN_COLOR"
 echo "# step 8: $(tail -n +"$((from + 1))" "$OUT/shell.log" | grep -c '_fileWatches is null') '_fileWatches is null' errors in the new lines of shell.log"
 shell_log_from "$from"
+
+# Step 9: an install without a graphical session (for example over SSH). Every run
+# would fail there, so the install only enables the timer.
+rm -f "$STUB/active/"*
+: > "$OUT/calls.log"
+check "step 9: install.sh without a graphical session exits 0" install_run install-3
+check "step 9: systemctl got enable $APP.timer, without --now" calls_are \
+    'systemctl --user show-environment' "systemctl --user is-active --quiet $APP.timer" \
+    'systemctl --user daemon-reload' 'systemctl --user is-active --quiet graphical-session.target' \
+    "systemctl --user enable $APP.timer"
+check "step 9: install.sh says that the map starts at the next graphical login" \
+    grep -q 'next graphical login' "$OUT/install-3.stdout"
 
 echo "# install: $status (0: every check passed)"
 exit $status
