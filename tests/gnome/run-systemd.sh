@@ -7,7 +7,8 @@
 # Usage: tests/gnome/run-systemd.sh <fedora44|ubuntu2404> <scenario> [virtual-monitor ...]
 # Example: tests/gnome/run-systemd.sh fedora44 systemd 1920x1080
 # Output: the scenario prints to stdout; files go to tests/gnome/out/<name>/, with
-# <name> = <image>-<scenario> or GNOME_TEST_OUT_NAME (run-systemd.sh empties it first).
+# <name> = <image>-<scenario> or GNOME_TEST_OUT_NAME (run-systemd.sh empties it first;
+# GNOME_TEST_OUT_NAME can have a slash: soak-<time>/<role>).
 # Variables named GNOME_TEST_* go into the container. GNOME_TEST_DETACH=1 leaves the
 # container running after the scenario and prints its name (the soak uses this; the
 # container then removes itself when systemd in it stops).
@@ -40,7 +41,8 @@ fi
 # --systemd=always: systemd is PID 1, and Podman gives it the mounts and the
 # cgroup it needs. --privileged: as in run.sh (glycin needs it). The session units
 # are mounted into /etc/systemd/user before the user manager starts.
-container="gnome-air-raid-map-$name-$$"
+# A container name cannot have a slash (the soak uses <name> = soak-<time>/<role>).
+container="gnome-air-raid-map-${name//\//-}-$$"
 remove() {
     podman rm -f -t 5 "$container" > /dev/null 2>&1 || true
 }

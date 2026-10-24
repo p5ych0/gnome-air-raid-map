@@ -18,6 +18,16 @@
 #                show: start time, result, exit status, run time, MemoryPeak,
 #                MemorySwapPeak, CPUUsageNSec. The sampler checks every 5 s; a run
 #                starts 30 s after the previous one, so it sees every run.
+#   gc.tsv       every GNOME_TEST_SOAK_GC_INTERVAL s (default 3600; the first at that
+#                time): a full garbage collection in gnome-shell, through
+#                org.gnome.Shell.Eval (the Shell runs with --unsafe-mode). One line:
+#                PSS, anonymous PSS, shmem PSS and RSS before the collection and 30 s
+#                after it, and "collected": the proof that the collection ran. Before
+#                it, an Eval creates an object that only a WeakRef holds; a second
+#                Eval runs imports.system.gc() and then checks that the WeakRef is
+#                empty (true). Without a collection, the object stays (false). The
+#                two Evals are two jobs, so the WeakRef does not keep the object.
+#                The sampler does not wait for the 30 s: it samples and polls as usual.
 #   journal.txt        the journalctl --user lines of the two units.
 #   shell-journal.txt  the journalctl --user lines of gnome-test-shell.service.
 #   journal-user-end.txt  the whole user journal, at the end.
@@ -50,15 +60,55 @@ journal_append() {
         "${@/#/--unit=}" >> "$OUT/$file" 2> /dev/null
 }
 
+# memory <pid>: PSS, its anonymous and shmem parts, and RSS, in KB, tab-separated.
+memory() {
+    awk '/^Pss:/ { p = $2 } /^Pss_Anon:/ { a = $2 } /^Pss_Shmem:/ { s = $2 } /^Rss:/ { r = $2 }
+        END { printf "%d\t%d\t%d\t%d", p, a, s, r }' "/proc/$1/smaps_rollup" 2> /dev/null || printf '\t\t\t'
+}
+
+shell_pid() {
+    local pid
+    pid=$(user_show -p MainPID --value gnome-test-shell.service 2> /dev/null)
+    echo "${pid:-0}"
+}
+
+# shell_eval <js>: prints the result of org.gnome.Shell.Eval, or "error".
+shell_eval() {
+    local reply
+    reply=$(as_user_bare gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
+        --method org.gnome.Shell.Eval "$1" 2> /dev/null) || { echo error; return; }
+    case $reply in
+        "(true, '"*"')") reply=${reply#"(true, '"}; echo "${reply%"')"}" ;;
+        *) echo error ;;
+    esac
+}
+
+# The first half of a GC probe: the sample before, the proof object, the collection.
+gc_start() {
+    gc_pid=$(shell_pid)
+    gc_epoch=$(date +%s)
+    gc_before=$(memory "$gc_pid")
+    shell_eval 'globalThis.__soakProbe = new WeakRef({}); true' > /dev/null
+    gc_collected=$(shell_eval 'imports.system.gc(); globalThis.__soakProbe.deref() === undefined')
+    gc_due=$((gc_epoch + 30))
+}
+
+# The second half, 30 s later: the sample after, and one line in gc.tsv.
+gc_end() {
+    local pid
+    pid=$(shell_pid)
+    [ "$pid" = "$gc_pid" ] || gc_collected="shell restarted"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$gc_epoch" "$((gc_epoch - start))" "$pid" "$gc_collected" \
+        "$gc_before" "$(memory "$pid")" >> "$OUT/gc.tsv"
+    gc_due=0
+}
+
 sample() {
     local now pid memory='' cpu='' cgroup group_pss=0 group_mem='' group_cpu='' p metadata
     now=$(date +%s)
-    pid=$(user_show -p MainPID --value gnome-test-shell.service 2> /dev/null)
-    [ -n "$pid" ] || pid=0
+    pid=$(shell_pid)
     if [ "$pid" -gt 0 ] && [ -r "/proc/$pid/stat" ]; then
-        # PSS, its anonymous and shmem parts, and RSS, in KB.
-        memory=$(awk '/^Pss:/ { p = $2 } /^Pss_Anon:/ { a = $2 } /^Pss_Shmem:/ { s = $2 } /^Rss:/ { r = $2 }
-            END { printf "%d\t%d\t%d\t%d", p, a, s, r }' "/proc/$pid/smaps_rollup")
+        memory=$(memory "$pid")
         # Fields 14 and 15 of /proc/<pid>/stat: utime and stime in clock ticks.
         cpu=$(awk -v t="$TICKS" '{ sub(/^.*\) /, ""); printf "%.2f", ($12 + $13) / t }' "/proc/$pid/stat")
     else
@@ -110,18 +160,31 @@ printf '# %s\n' "$(printf '%s\t' epoch elapsed_s shell_pid shell_pss_kb shell_ps
     metadata_write_bytes)" \
     | sed 's/\t$//' > "$OUT/samples.tsv"
 printf '# start_epoch\tunit\tinvocation\tresult\tstatus\tseconds\tpeak_bytes\tswap_peak_bytes\tcpu_ns\n' > "$OUT/runs.tsv"
+printf '# %s\n' "$(printf '%s\t' epoch elapsed_s shell_pid collected pss_before_kb anon_before_kb shmem_before_kb \
+    rss_before_kb pss_after_kb anon_after_kb shmem_after_kb rss_after_kb)" | sed 's/\t$//' > "$OUT/gc.tsv"
 : > "$OUT/journal.txt"
 : > "$OUT/shell-journal.txt"
 rm -f /var/tmp/gnome-test-soak-*.cursor
 # The runs before the sampler started (the install) are in journal-user-end.txt, not in runs.tsv.
 for unit in "${UNITS[@]}"; do last[$unit]=$(user_show -p InvocationID --value "$unit" 2> /dev/null); done
 echo "$(date -Is) sampler start: $seconds s" >> "$OUT/sampler.log"
+gc_interval=${GNOME_TEST_SOAK_GC_INTERVAL:-3600}
 next=$start
+next_gc=$((start + gc_interval))
+gc_due=0
 while :; do
     now=$(date +%s)
     if [ "$now" -ge "$next" ]; then
         sample
         next=$((next + 60))
+    fi
+    if [ $gc_due -gt 0 ] && [ "$(date +%s)" -ge $gc_due ]; then
+        gc_end
+    fi
+    # The last probe must end 30 s before the end of the sampler.
+    if [ $gc_due -eq 0 ] && [ "$(date +%s)" -ge $next_gc ] && [ $next_gc -le $((end - 35)) ]; then
+        gc_start
+        next_gc=$((next_gc + gc_interval))
     fi
     poll_runs
     [ "$now" -lt "$end" ] || break
