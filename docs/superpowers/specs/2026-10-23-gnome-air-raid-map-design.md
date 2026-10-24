@@ -69,6 +69,9 @@ These settings did not change in these versions.
 4. Nothing stays in memory between runs.
 5. One run uses less than 1 s of CPU time. Its peak memory is less than
    120 MB at 1920×1080, and less than 200 MB at the size cap (section 5.6).
+   We measure the CPU time on a quiet machine and record the load. The rule
+   and the measured margins are in
+   [`docs/decisions/2026-10-24-cpu-budget.md`](../../decisions/2026-10-24-cpu-budget.md).
 6. Average CPU use stays below 1 % of one core.
 7. The project reuses the JavaScript of the Plasma project where possible.
 8. The picture always shows the NEPTUN attribution and the official-alerts notice.
@@ -189,7 +192,10 @@ and the future extension can both use it.
    one hour, send a conditional request (`If-None-Match`). Download again only
    if the server copy changed.
 3. Request `/api/v1/alerts` and `/api/v1/threats` at the same time. Each
-   request has a 15-second timeout.
+   request has a 15-second timeout. The requests trust the system CA file
+   `/etc/ssl/certs/ca-certificates.crt`, or the default trust store if the
+   updater cannot load that file
+   ([`docs/decisions/2026-10-24-cpu-budget.md`](../../decisions/2026-10-24-cpu-budget.md)).
 4. Validate each response with the rules from `MapData.js`. A response that
    does not pass validation counts as a failed request.
 5. Store each valid response and its time in the state file.
@@ -472,7 +478,9 @@ Checks:
 1. Run the updater 1,000 times against a local fixture server. Do not use
    NEPTUN for this test. Record the peak RSS of each run. Do this once at
    1920×1080 and once at the size cap. Pass: every run is below the limit of
-   goal 5, and the trend is flat.
+   goal 5, and the trend is flat. Run the check on a quiet machine and
+   record the load. The results are in
+   [`docs/decisions/2026-10-24-cpu-budget.md`](../../decisions/2026-10-24-cpu-budget.md).
 2. After the 1,000 runs, count the files and bytes in the cache and runtime
    folders. Pass: the counts are the same as after run 10.
 3. After the 1,000 runs, look for updater processes. Pass: none.
