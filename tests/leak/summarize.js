@@ -18,8 +18,9 @@
 //   --expect, the samples cover the expected seconds (90 s slack).
 //   Updater runs: no gap between run starts above 90 s (with the gaps from the first
 //   sample to the first run and from the last run to the last sample); at least 90 %
-//   of the runs that 30 s steps allow; MemoryPeak recorded for every run; the peak
-//   trend is less than 1 % of the mean peak per 100 runs; the CPU time of all runs
+//   of the runs that 30 s steps allow (one run of slack at the end); MemoryPeak
+//   recorded for every run; the peak trend is less than 1 % of the mean peak per
+//   100 runs; the CPU time of all runs
 //   is less than 1 % of the time (864 s in 24 hours, goal 6). Each run that did not
 //   succeed is listed with a REVIEW line: its cause must be known (spec 7.4, check
 //   4). REVIEW does not change the exit status.
@@ -285,8 +286,11 @@ function runChecks(role) {
         print(`    ${count} × ${message}`);
 
     verdict(gap <= MAX_RUN_GAP_S, `${role.name}: no gap between run starts above ${MAX_RUN_GAP_S} s (largest ${gap} s)`);
-    verdict(runs.length >= MIN_RUN_SHARE * expectedRuns,
-        `${role.name}: at least ${MIN_RUN_SHARE * 100} % of the possible runs (${runs.length} of ${fixed(expectedRuns, 0)})`);
+    // One run of slack: the last run can still be in progress when the sampler ends
+    // (a 300 s soak has 9 complete runs of 10.1 possible). In 24 hours one run is 0.03 %.
+    verdict(runs.length + 1 >= MIN_RUN_SHARE * expectedRuns,
+        `${role.name}: at least ${MIN_RUN_SHARE * 100} % of the possible runs, with one run of slack at the end ` +
+        `(${runs.length} of ${fixed(expectedRuns, 1)})`);
     verdict(measured.length === runs.length, `${role.name}: systemd records MemoryPeak for every run`);
     verdict(Math.abs(trend) < meanPeak / 100, `${role.name}: the MemoryPeak trend is less than 1 % of the mean peak per 100 runs`);
     verdict(cpuTotal < runTime / 100, `${role.name}: the CPU time of all runs is less than 1 % of the time (${fixed(runTime / 100)} s)`);
