@@ -189,6 +189,11 @@ install_app() {
     if [ -e "$UNITDIR/$APP.service" ]; then
         systemctl --user stop "$APP.service" || warn "cannot stop $APP.service"
     fi
+    # A swap that a SIGKILL or a power loss stopped leaves APPDIR absent and the only
+    # complete program in OLD: move it back before the next line deletes it.
+    if [ ! -e "$APPDIR" ] && [ ! -L "$APPDIR" ] && { [ -e "$OLD" ] || [ -L "$OLD" ]; }; then
+        mv -T "$OLD" "$APPDIR"
+    fi
     # Delete what an earlier install that stopped left.
     rm -rf "$NEW" "$OLD"
     mkdir -p "$(dirname "$APPDIR")" "$NEW"

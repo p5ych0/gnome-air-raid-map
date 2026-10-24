@@ -68,7 +68,7 @@ function newPicturePath(dir, now) {
 
 // Deletes every picture*.png and *.tmp in dir except the paths in keep. A leftover
 // comes from a run that failed or was killed. Only dir is touched. A file that
-// cannot be deleted is one warning in warnings, not an error.
+// cannot be deleted is one warning in warnings (once, also after two sweeps), not an error.
 function sweepRuntimeDir(dir, keep, warnings) {
     let names;
     try {
@@ -82,8 +82,11 @@ function sweepRuntimeDir(dir, keep, warnings) {
             const path = GLib.build_filenamev([dir, name]);
             const ours = (name.startsWith('picture') && name.endsWith('.png')) || name.endsWith('.tmp');
             if (!ours || keep.has(path)) continue;
-            if (GLib.unlink(path) !== 0 && GLib.file_test(path, GLib.FileTest.EXISTS | GLib.FileTest.IS_SYMLINK))
-                warnings.push(`old file: cannot delete ${path}`);
+            if (GLib.unlink(path) !== 0 && GLib.file_test(path, GLib.FileTest.EXISTS | GLib.FileTest.IS_SYMLINK)) {
+                // The sweep at the start and the sweep at the end of a run can both fail on one file.
+                const warning = `old file: cannot delete ${path}`;
+                if (!warnings.includes(warning)) warnings.push(warning);
+            }
         }
     } finally {
         names.close(null);
@@ -143,14 +146,22 @@ export async function runOnce({session, settings, display, paths, now, base,
     // The live picture of the last run. Only a file in the runtime folder is ours.
     const dir = Gio.File.new_for_path(paths.runtimeDir).get_path();
     const previous = GLib.path_get_dirname(state.picture) === dir ? state.picture : '';
+    // The picture on screen now: the sweeps keep it until the Shell has the new one.
+    const onScreen = ['picture-uri', 'picture-uri-dark'].map(key => onScreenPath(settings.get_string(key)));
+    const showsPrevious = previous !== '' && showsPicture(settings, GLib.filename_to_uri(previous, null));
+    // One key shows previous and the other does not: the wallpaper must move to a new
+    // file name, and a rename of previous would leave the first key on a missing file
+    // if the settings then fail. So draw a new picture and keep previous.
     const drew = key !== state.renderKey || previous === '' ||
-        !GLib.file_test(previous, GLib.FileTest.IS_REGULAR);
+        !GLib.file_test(previous, GLib.FileTest.IS_REGULAR) ||
+        (!showsPrevious && onScreen.includes(previous));
     const draw = name => writePicture(renderPicture(layout, geometry, view), dir, reloadMethod, name);
     let picture = previous;
-    // The picture on screen now: the sweep below keeps it until the Shell has the new one.
-    const onScreen = ['picture-uri', 'picture-uri-dark'].map(key => onScreenPath(settings.get_string(key)));
+    // Earlier runs that were killed can have left files: delete them before this run
+    // makes new ones.
+    sweepRuntimeDir(dir, new Set([previous, ...onScreen].filter(path => path !== '')), warnings);
     try {
-        if (previous !== '' && showsPicture(settings, GLib.filename_to_uri(previous, null))) {
+        if (showsPrevious) {
             // The Shell watches the file that it shows, so an update keeps the name.
             if (drew) picture = draw(GLib.path_get_basename(previous));
         } else {

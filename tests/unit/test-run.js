@@ -380,6 +380,42 @@ test('leftovers of a killed run are removed', () => withRun(async ({paths, setti
     assertEqual(settings.get_string('picture-uri'), result.uri);
 }));
 
+// A run with unchanged data that cannot move the wallpaper must not touch a file that a
+// key still shows: picture-uri-dark is locked and shows another file, picture-uri
+// shows the live picture A. The run draws a new picture and fails on the locked key.
+test('a locked key keeps the picture that the other key still shows', () =>
+    withRun(async ({backend, paths, settings, once}) => {
+        const first = await once();
+        const picture = pathOf(first.uri);
+        setWallpaper(backend, first.uri, 'spanned');
+        Gio.Settings.new_with_backend(SCHEMA, backend).set_string('picture-uri-dark', 'file:///other.png');
+        Gio.Settings.sync();
+        const locked = {
+            get_string: key => settings.get_string(key),
+            is_writable: key => key !== 'picture-uri-dark',
+            delay() {}, set_string() {}, apply() {},
+        };
+        await assertRejects(once({settings: locked, now: now + 20000}),
+            /^Cannot set the wallpaper: picture-uri-dark is not writable$/);
+        assertTrue(GLib.file_test(picture, GLib.FileTest.EXISTS), 'the picture that picture-uri shows was renamed');
+        assertEqual(settings.get_string('picture-uri'), first.uri);
+        assertTrue(pictureFiles(paths).length <= 2, pictureFiles(paths).join(' '));
+    }));
+
+// An earlier run that was killed (for example during a PNG write) never reached its
+// sweep. A run that does not draw must delete what it left.
+test('a run that does not draw removes leftovers of a killed run', () =>
+    withRun(async ({paths, settings, once}) => {
+        const first = await once();
+        for (const name of ['picture-111.png', 'picture-222.png.tmp', 'state.json.tmp'])
+            GLib.file_set_contents(`${paths.runtimeDir}/${name}`, 'x');
+        const second = await once({now: now + 20000});
+        assertEqual(second.drew, false, 'the same data is not drawn again');
+        assertDeepEqual(runtimeFiles(paths), [GLib.path_get_basename(pathOf(first.uri)), 'state.json']);
+        assertEqual(settings.get_string('picture-uri'), first.uri);
+        assertTrue(exists(first.uri), 'the live picture was deleted');
+    }));
+
 test('the picture that the settings show survives a run that cannot apply', () =>
     withRun(async ({dir, paths, once}) => {
         GLib.mkdir_with_parents(paths.runtimeDir, 0o700);
