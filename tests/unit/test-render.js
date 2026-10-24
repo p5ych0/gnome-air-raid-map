@@ -132,14 +132,13 @@ test('overlapping monitors are all drawn', () => {
     assertDeepEqual(monitorPlan(monitors).map(entry => entry.copyOf), [null, null, null]);
 });
 
-test('a copied monitor has the pixels of a drawn monitor', () => {
-    const layout = pictureLayout(parseDisplayOverride('640x360@1,800x450@1,640x360@1'));
+// The pixels of monitor index in the picture that differ from the same monitor drawn on its own.
+function differFromAlone(layout, index) {
     const view = syntheticView({alerts: redAlert()});
     const drawn = renderPicture(layout, syntheticGeometry(), view);
     const picture = pixelReader(drawn);
     drawn.finish();
-    // The third monitor, drawn on its own.
-    const rect = layout.monitors[2];
+    const rect = layout.monitors[index];
     const surface = new Cairo.ImageSurface(Cairo.Format.RGB24, layout.width, layout.height);
     const cr = new Cairo.Context(surface);
     drawMonitor(cr, rect, syntheticGeometry(), view);
@@ -150,7 +149,22 @@ test('a copied monitor has the pixels of a drawn monitor', () => {
     for (let y = rect.y; y < rect.y + rect.height; ++y)
         for (let x = rect.x; x < rect.x + rect.width; ++x)
             if (picture(x, y).some((v, i) => v !== alone(x, y)[i])) ++differ;
-    assertEqual(differ, 0, 'pixels that differ');
+    return differ;
+}
+
+test('a copied monitor has the pixels of a drawn monitor', () => {
+    const layout = pictureLayout(parseDisplayOverride('640x360@1,800x450@1,640x360@1'));
+    assertEqual(differFromAlone(layout, 2), 0, 'pixels that differ');
+});
+
+test('a copied monitor at a scale that is not a whole number has the pixels of a drawn monitor', () => {
+    // A cap of 1290240 pixels scales the picture by 0.8367, as the size cap does for large
+    // layouts. Each monitor then has 1071x602 pixels.
+    const layout = pictureLayout(parseDisplayOverride('1280x720@1,1280x720@1'), 1290240);
+    assertDeepEqual(layout.monitors.map(({x, width, height}) => [x, width, height]), [[0, 1071, 602], [1071, 1071, 602]]);
+    assertTrue(!Number.isInteger(layout.monitors[1].scale), `scale ${layout.monitors[1].scale}`);
+    assertDeepEqual(monitorPlan(layout.monitors).map(entry => entry.copyOf), [null, layout.monitors[0]]);
+    assertEqual(differFromAlone(layout, 1), 0, 'pixels that differ');
 });
 
 test('scale 2 draws the logical layout at twice the size', () => {
