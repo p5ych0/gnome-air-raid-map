@@ -4,7 +4,7 @@ import GLib from 'gi://GLib';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import System from 'system';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertRejects} from '../lib/assert.js';
-import {removeTree} from '../lib/files.js';
+import {importCopy, removeTree} from '../lib/files.js';
 import {startServer} from '../lib/fixture-server.js';
 import {syntheticCollection, syntheticGeometry, syntheticThreats} from '../lib/fixtures.js';
 import {assertColorNear, pixelReaderFromPath} from '../lib/pixels.js';
@@ -39,6 +39,7 @@ const noDisplay = () => {
 
 // Runs fn with a fixture server, a new temporary folder and settings in memory.
 // once(options) is one run with the values of main.js; options replace any of them.
+// once(options, run) uses the runOnce function run, for example of a copy of the program.
 async function withRun(fn, serverRoutes = routes()) {
     const server = startServer(serverRoutes);
     const dir = GLib.dir_make_tmp('air-raid-run-XXXXXX');
@@ -47,7 +48,7 @@ async function withRun(fn, serverRoutes = routes()) {
     const runtimeDir = `${dir}/run/gnome-air-raid-map`;
     const paths = {runtimeDir, cacheDir: `${dir}/cache/gnome-air-raid-map`, statePath: `${runtimeDir}/state.json`};
     const session = createSession({timeout: 5});
-    const once = (options = {}) => runOnce({
+    const once = (options = {}, run = runOnce) => run({
         session, settings, display: display('1920x1080@1'), paths, now, base: server.base,
         labelMode: 'updated', reloadMethod: 'rename', pictureOptions: 'spanned', ...options,
     });
@@ -292,6 +293,31 @@ test('boundaries come back after an outage', () => withRun(async ({server, once}
     assertEqual(second.drew, true);
     assertColorNear(readPicture(second.uri)(...INSIDE), '#cf4655');
 }, {...routes(), '/oblasts.geojson': {status: 503, body: 'down'}}));
+
+// The prepared boundaries hold the SHA-256 of core/mapdata.js. A run that cannot read
+// that file parses the boundary files and draws as before.
+test('a run without the code version draws and writes no prepared boundaries', () => withRun(async ({paths, once}) => {
+    const {module: copy, folder} = await importCopy('updater/run.js');
+    try {
+        GLib.unlink(`${folder}/core/mapdata.js`);
+        // Run 1 downloads the boundaries; run 2, in a new minute, uses the cached files.
+        for (const n of [1, 2]) {
+            const result = await once({now: now + (n - 1) * 60000}, copy.runOnce);
+            assertEqual(result.drew, true, `run ${n}`);
+            assertDeepEqual(result.warnings, [], `run ${n}`);
+            assertColorNear(readPicture(result.uri)(...INSIDE), '#cf4655');
+            for (const name of ['oblasts', 'raions'])
+                assertTrue(!GLib.file_test(`${paths.cacheDir}/${name}.prepared`, GLib.FileTest.EXISTS),
+                    `run ${n}: ${name}.prepared is written`);
+        }
+        // The program itself writes them.
+        await once({now: now + 120000});
+        for (const name of ['oblasts', 'raions'])
+            assertTrue(GLib.file_test(`${paths.cacheDir}/${name}.prepared`, GLib.FileTest.EXISTS), `no ${name}.prepared`);
+    } finally {
+        removeTree(folder);
+    }
+}));
 
 test('boundaries and both feeds are requested at the same time', () => withRun(async ({server, once}) => {
     for (const [path, route] of Object.entries(routes()))

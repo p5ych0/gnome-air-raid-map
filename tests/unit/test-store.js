@@ -2,7 +2,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertRejects} from '../lib/assert.js';
-import {removeTree} from '../lib/files.js';
+import {importCopy, removeTree} from '../lib/files.js';
 import {startServer} from '../lib/fixture-server.js';
 import {pixelReader} from '../lib/pixels.js';
 import {syntheticView} from '../lib/fixtures.js';
@@ -263,6 +263,89 @@ test('a changed boundary file rebuilds its prepared entry', () => withFixture(as
     assertTrue(readPrepared(preparedPath(dir, 'oblasts'), sha256(collection('region', 'o2'))),
         'no prepared entry for the new version');
 }));
+
+// The header and the doubles of the prepared entry at file. writeEntry writes them back
+// with a valid checksum, in the layout of updater/store.js: the doubles in the byte order
+// entry.littleEndian.
+const NATIVE_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+function readEntry(file) {
+    const [, bytes] = GLib.file_get_contents(file);
+    const size = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(64, true);
+    const start = Math.ceil((68 + size) / 8) * 8;
+    return {header: JSON.parse(new TextDecoder().decode(bytes.subarray(68, 68 + size))),
+        numbers: Array.from(new Float64Array(bytes.slice(start).buffer)), littleEndian: NATIVE_LITTLE_ENDIAN};
+}
+function writeEntry(file, {header, numbers, littleEndian}) {
+    const text = new TextEncoder().encode(JSON.stringify(header));
+    const start = Math.ceil((68 + text.length) / 8) * 8;
+    const bytes = new Uint8Array(start + 8 * numbers.length);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(64, text.length, true);
+    bytes.set(text, 68);
+    numbers.forEach((n, i) => view.setFloat64(start + 8 * i, n, littleEndian));
+    bytes.set(new TextEncoder().encode(GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes.subarray(64))));
+    GLib.file_set_contents(file, bytes);
+}
+
+// The entry holds the output of the rules of core/mapdata.js, so its header holds the
+// SHA-256 of the text of that file. An entry from other code is not used.
+const MAPDATA = GLib.filename_from_uri(
+    GLib.Uri.resolve_relative(import.meta.url, '../../core/mapdata.js', GLib.UriFlags.NONE))[0];
+const codeVersion = () => sha256(new TextDecoder().decode(GLib.file_get_contents(MAPDATA)[1]));
+
+test('a prepared entry holds the SHA-256 of core/mapdata.js', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    for (const name of ['oblasts', 'raions'])
+        assertEqual(readEntry(preparedPath(dir, name)).header.code, codeVersion(), name);
+}));
+
+test('a prepared entry from other code is rebuilt', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    // A valid entry for the version of the file, with other content and another code version.
+    const file = preparedPath(dir, 'oblasts');
+    writePrepared(file, otherGeometry(), sha256(collection('region', 'o1')), 'other code');
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertDeepEqual(result.geometry.oblasts, prepareGeometry(JSON.parse(collection('region', 'o1'))));
+    assertEqual(result.version, version());
+    assertEqual(readEntry(file).header.code, codeVersion(), 'the entry is not rebuilt');
+}));
+
+test('a prepared entry without a code version is rebuilt', () => withFixture(async ({server, dir, session}) => {
+    await loadGeometry(session, server.base, dir, 1000000);
+    // The header of the first entries had no code field.
+    const file = preparedPath(dir, 'oblasts');
+    writePrepared(file, otherGeometry(), sha256(collection('region', 'o1')));
+    const entry = readEntry(file);
+    delete entry.header.code;
+    writeEntry(file, entry);
+    const result = await loadGeometry(session, server.base, dir, 1060000);
+    assertDeepEqual(result.geometry.oblasts, prepareGeometry(JSON.parse(collection('region', 'o1'))));
+    assertEqual(result.version, version());
+    assertEqual(readEntry(file).header.code, codeVersion(), 'the entry is not rebuilt');
+}));
+
+test('without the code version a load neither uses nor writes a prepared entry', () =>
+    withFixture(async ({server, dir, session}) => {
+        const {module: copy, folder} = await importCopy('updater/store.js');
+        try {
+            // The copy cannot read its core/mapdata.js, so it has no code version.
+            GLib.unlink(GLib.build_filenamev([folder, 'core', 'mapdata.js']));
+            const first = await copy.loadGeometry(session, server.base, dir, 1000000);
+            assertDeepEqual(first.geometry.oblasts, prepareGeometry(JSON.parse(collection('region', 'o1'))));
+            assertEqual(first.version, version());
+            for (const name of ['oblasts', 'raions'])
+                assertTrue(!GLib.file_test(preparedPath(dir, name), GLib.FileTest.EXISTS), `${name}.prepared is written`);
+            // A valid entry with other content: the copy must not use it or write over it.
+            const file = preparedPath(dir, 'oblasts');
+            writePrepared(file, otherGeometry(), sha256(collection('region', 'o1')));
+            const again = await copy.loadGeometry(session, server.base, dir, 1060000);
+            assertDeepEqual(again.geometry.oblasts, prepareGeometry(JSON.parse(collection('region', 'o1'))));
+            assertDeepEqual(readPrepared(file, sha256(collection('region', 'o1'))), otherGeometry(),
+                'the entry is written');
+        } finally {
+            removeTree(folder);
+        }
+    }));
 
 // Each damage gives an entry that must not be used: the load rebuilds it from the file.
 const changeByte = (bytes, index) => {

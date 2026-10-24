@@ -52,18 +52,40 @@ const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256
 // about 13 ms of each run; reading this entry takes about 4 ms (Task 11b). Layout:
 //   64 bytes   the SHA-256 (hex) of all bytes after it
 //   4 bytes    the header length H, little-endian
-//   H bytes    the header, JSON: the format, the version of the file, the byte order,
-//              and for each region its key, its label and its ring lengths
+//   H bytes    the header, JSON: the format, the version of the file, the code version,
+//              the byte order, and for each region its key, its label and its ring lengths
 //   0-7 bytes  zero, up to a multiple of 8
 //   the rest   doubles: the bounds, then for each region its center and its ring points
-// An entry with another format, version or byte order, or a wrong checksum or shape, is
-// not used: the run builds it again from the file.
+// An entry with another format, version, code version or byte order, or a wrong checksum
+// or shape, is not used: the run builds it again from the file.
 const PREPARED_FORMAT = 'gnome-air-raid-map prepared geometry 1';
 const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 const SUM = 64;
 const sha256Bytes = bytes => GLib.compute_checksum_for_data(GLib.ChecksumType.SHA256, bytes);
 
-export function writePrepared(path, geometry, version) {
+// The entry holds the output of the rules of core/mapdata.js: the projection, the centers
+// and the labels. So the code version is the SHA-256 of the text of that file, and an
+// update that changes these rules rebuilds each entry. core/mapdata.js has no imports, so
+// its text holds all of these rules. A process reads the file once (less than 0.1 ms).
+// Without the file there is no code version: the run then neither reads nor writes an
+// entry, and parses and projects the GeoJSON as before.
+const MAPDATA = GLib.Uri.resolve_relative(import.meta.url, '../core/mapdata.js', GLib.UriFlags.NONE);
+let codeVersionOfProcess;
+function codeVersion() {
+    if (codeVersionOfProcess === undefined) {
+        try {
+            const [ok, contents] = GLib.file_get_contents(GLib.filename_from_uri(MAPDATA)[0]);
+            codeVersionOfProcess = ok ? sha256Bytes(contents) : null;
+        } catch (e) {
+            codeVersionOfProcess = null;
+        }
+    }
+    return codeVersionOfProcess;
+}
+
+// The run gives no code argument. A test can give another code version.
+export function writePrepared(path, geometry, version, code = codeVersion()) {
+    if (!code) throw new Error('No code version for the prepared boundaries');
     let count = 4;
     for (const region of geometry.regions) {
         count += 2;
@@ -86,7 +108,7 @@ export function writePrepared(path, geometry, version) {
         return {key: region.key, label: region.label, rings};
     });
     const header = new TextEncoder().encode(JSON.stringify(
-        {format: PREPARED_FORMAT, version, littleEndian: LITTLE_ENDIAN, regions}));
+        {format: PREPARED_FORMAT, version, code, littleEndian: LITTLE_ENDIAN, regions}));
     const start = Math.ceil((SUM + 4 + header.length) / 8) * 8;
     const bytes = new Uint8Array(start + numbers.byteLength);
     new DataView(bytes.buffer).setUint32(SUM, header.length, true);
@@ -98,8 +120,9 @@ export function writePrepared(path, geometry, version) {
 }
 
 // The prepareGeometry result in the entry at path, or null if the entry is missing or
-// damaged, or if it is for another version.
-export function readPrepared(path, version) {
+// damaged, or if it is for another version or another code version.
+export function readPrepared(path, version, code = codeVersion()) {
+    if (!code) return null;
     try {
         const [ok, bytes] = GLib.file_get_contents(path);
         if (!ok || bytes.length < SUM + 4) return null;
@@ -108,7 +131,7 @@ export function readPrepared(path, version) {
         const start = Math.ceil((SUM + 4 + size) / 8) * 8;
         if (start > bytes.length || (bytes.length - start) % 8 !== 0) return null;
         const header = JSON.parse(new TextDecoder().decode(bytes.subarray(SUM + 4, SUM + 4 + size)));
-        if (header?.format !== PREPARED_FORMAT || header.version !== version ||
+        if (header?.format !== PREPARED_FORMAT || header.version !== version || header.code !== code ||
             header.littleEndian !== LITTLE_ENDIAN || !Array.isArray(header.regions) || !header.regions.length)
             return null;
         // A copy: the doubles need an aligned buffer.
