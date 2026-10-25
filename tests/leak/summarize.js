@@ -17,7 +17,8 @@
 //   Data (any role): no "aborted" file; no gap between samples above 150 s; with
 //   --expect, the samples cover the expected seconds (90 s slack); every GC probe has
 //   3 proven GC passes, a malloc_trim(0) that ran, and a sample after it. A failed probe
-//   is listed with its reason, and its sample does not count.
+//   is listed with its reason, and its sample does not count. A probe that an updater run
+//   overlapped in each of its 3 tries (the sampler repeats it) is a failed probe.
 //   Updater runs: no gap between run starts above 90 s (with the gaps from the first
 //   sample to the first run and from the last run to the last sample); at least 90 %
 //   of the runs that 30 s steps allow (one run of slack at the end); MemoryPeak
@@ -141,12 +142,15 @@ const EXPECT_SLACK_S = 90;      // the last sample can be up to one step early
 // Check 5 (docs/decisions/2026-10-25-shell-memory.md).
 const DECISION = 'docs/decisions/2026-10-25-shell-memory.md';
 const GC_PASSES = 3;            // proven GC passes in each probe
+const PROBE_TRIES = 3;          // tries of a probe (the sampler repeats a probe that a run overlaps)
 const UNIT_KB = 8100;           // one 1920x1080 RGBA picture buffer
 const LIVE_LIMIT_UNITS = 2;     // the added rise of the live memory
 
 // Why a GC probe gives no good sample of the live memory, or null for a good probe.
 function probeProblem(g) {
     if (String(g.collected).includes('shell restarted')) return 'gnome-shell restarted during the probe';
+    if (String(g.collected).includes('updater overlap'))
+        return `an updater run overlapped each of ${PROBE_TRIES} tries of the probe`;
     if (g.trim === undefined) return 'no malloc_trim (a probe of an older sampler, with one GC pass)';
     if (g.gc_passes !== GC_PASSES)
         return `${Number.isFinite(g.gc_passes) ? g.gc_passes : 0} of ${GC_PASSES} GC passes proven (${g.collected})`;

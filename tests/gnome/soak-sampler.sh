@@ -37,6 +37,15 @@
 #                   gdb): it writes /out/trim-request and waits 150 s at most for
 #                   /out/trim-result (tests/leak/soak.sh answers it).
 #                5. Waits 5 s and takes the sample "trim": the live memory.
+#                The timer keeps its cadence, so a run can start during the probe, and a
+#                picture change then leaves dead buffers in the samples. So the probe
+#                reads the InvocationID of the updater service before the first sample
+#                and after the last one, and reads its ActiveState after the last one. If
+#                the ID changed or a run is active, a run overlapped the probe. The
+#                sampler then discards the probe (sampler.log has a line) and starts it
+#                again (steps 1 to 5), 3 tries at most. Three overlaps give a line with
+#                "updater overlap" in "collected", and summarize.js fails that probe.
+#                The control container has no updater and no check.
 #                One line: the start time, gnome-shell PID, "collected" (the result of
 #                each collection: true, false or error; or "shell restarted"),
 #                gc_passes (the number of proven collections), trim (ok or fail) and
@@ -50,7 +59,7 @@
 # The control container runs the same sampler: it has no updater, so its runs.tsv
 # and journal.txt stay empty, and both containers have the same sampler load.
 set -u
-OUT=/out
+OUT=${GNOME_TEST_SOAK_OUT:-/out}
 seconds=$1
 TEST_USER=tester
 TEST_UID=$(id -u "$TEST_USER")
@@ -101,10 +110,12 @@ shell_eval() {
 
 # The GC probe (see gc.tsv above).
 GC_PASSES=3
+# A probe that an updater run overlaps is discarded and tried again, 3 tries at most.
+PROBE_TRIES=3
 GC_PASS_WAIT=2
 TRIM_WAIT=150
 # A probe ends before the end of the sampler: it starts 300 s before the end at the latest.
-PROBE_MARGIN=300
+PROBE_MARGIN=${GNOME_TEST_SOAK_PROBE_MARGIN:-300}
 
 # One proven garbage collection in gnome-shell: prints true, false or error.
 gc_pass() {
@@ -148,26 +159,46 @@ trim_request() {
     printf 'fail\tno answer from the host in %s s (tests/leak/soak.sh answers the trim requests)' "$TRIM_WAIT"
 }
 
+# overlapped <id>: succeeds if an updater run overlapped a probe that started with the
+# InvocationID id (empty in the control container, which has no updater): the ID changed,
+# or a run is active.
+overlapped() {
+    local unit=${UNITS[0]} id state
+    [ -n "$1" ] || return 1
+    id=$(user_show -p InvocationID --value "$unit" 2> /dev/null)
+    state=$(user_show -p ActiveState --value "$unit" 2> /dev/null)
+    [ "$id" = "$1" ] || return 0
+    case $state in inactive | failed) return 1 ;; *) return 0 ;; esac
+}
+
 # One GC probe and its line in gc.tsv. It runs in the background.
 gc_probe() {
-    local pid epoch before gc1 gc3 trim after results=() passes=0 result i
-    wait_run_end
-    sleep 5
-    pid=$(shell_pid)
-    epoch=$(date +%s)
-    before=$(memory "$pid")
-    for ((i = 1; i <= GC_PASSES; i++)); do
-        result=$(gc_pass)
-        results+=("$result")
-        [ "$result" != true ] || passes=$((passes + 1))
-        sleep "$GC_PASS_WAIT"
-        [ $i -ne 1 ] || gc1=$(memory "$pid")
+    local pid epoch before gc1 gc3 trim after results passes result i try id0 clean=0
+    for ((try = 1; try <= PROBE_TRIES; try++)); do
+        results=() passes=0
+        wait_run_end
+        sleep 5
+        id0=$(user_show -p InvocationID --value "${UNITS[0]}" 2> /dev/null)
+        pid=$(shell_pid)
+        epoch=$(date +%s)
+        before=$(memory "$pid")
+        for ((i = 1; i <= GC_PASSES; i++)); do
+            result=$(gc_pass)
+            results+=("$result")
+            [ "$result" != true ] || passes=$((passes + 1))
+            sleep "$GC_PASS_WAIT"
+            [ $i -ne 1 ] || gc1=$(memory "$pid")
+        done
+        gc3=$(memory "$pid")
+        trim=$(trim_request "$pid")
+        sleep 5
+        after=$(memory "$pid")
+        if ! overlapped "$id0"; then clean=1; break; fi
+        echo "$(date -Is) GC probe try $try of $PROBE_TRIES: an updater run overlapped it; the sample is discarded" \
+            >> "$OUT/sampler.log"
     done
-    gc3=$(memory "$pid")
-    trim=$(trim_request "$pid")
-    sleep 5
-    after=$(memory "$pid")
     [ "$(shell_pid)" = "$pid" ] || results=("shell restarted")
+    [ $clean -eq 1 ] || results=("updater overlap")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$epoch" "$((epoch - start))" "$pid" \
         "$(IFS=,; echo "${results[*]}")" "$passes" "$trim" "$before" "$gc1" "$gc3" "$after" "$(date +%s)" \
         >> "$OUT/gc.tsv"

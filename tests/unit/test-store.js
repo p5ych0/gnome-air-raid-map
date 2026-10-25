@@ -428,6 +428,21 @@ const SHAPE = {
     'bounds with no area': entry => {
         entry.numbers[2] = entry.numbers[0];
     },
+    // The checksum is valid, but the numbers are not the output of prepareGeometry.
+    // A point that project() never makes, with bounds that include it:
+    'a point out of the projection range': entry => {
+        entry.numbers[entry.numbers.length - 2] = 1e300;
+        entry.numbers[2] = 1e300;
+    },
+    'a point outside the stored bounds': entry => {
+        entry.numbers[entry.numbers.length - 2] = 100;
+    },
+    'stored bounds that differ from the extent of the points': entry => {
+        entry.numbers[2] += 1;
+    },
+    'a center outside the bounds': entry => {
+        entry.numbers[4] = 100;
+    },
 };
 for (const [shape, change] of Object.entries(SHAPE)) {
     test(`a prepared entry with a valid checksum is rebuilt: ${shape}`, () => withFixture(async ({server, dir, session}) => {

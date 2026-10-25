@@ -140,6 +140,7 @@ export function readPrepared(path, version, code = codeVersion()) {
         const numbers = new Float64Array(bytes.slice(start).buffer);
         let k = 4;
         const keys = {}, regions = [];
+        const extent = [Infinity, Infinity, -Infinity, -Infinity];
         for (const {key, label, rings} of header.regions) {
             if (typeof key !== 'string' || !key || keys['@' + key] || typeof label !== 'string' ||
                 !Array.isArray(rings) || !rings.length || k + 2 > numbers.length)
@@ -158,6 +159,10 @@ export function readPrepared(path, version, code = codeVersion()) {
                     for (let i = 0; i < n; i++, k += 2) {
                         if (!Number.isFinite(numbers[k]) || !Number.isFinite(numbers[k + 1])) return null;
                         ring[i] = [numbers[k], numbers[k + 1]];
+                        extent[0] = Math.min(extent[0], numbers[k]);
+                        extent[1] = Math.min(extent[1], numbers[k + 1]);
+                        extent[2] = Math.max(extent[2], numbers[k]);
+                        extent[3] = Math.max(extent[3], numbers[k + 1]);
                     }
                     polygon.push(ring);
                 }
@@ -169,6 +174,14 @@ export function readPrepared(path, version, code = codeVersion()) {
         const bounds = Array.from(numbers.subarray(0, 4));
         // The checks of prepareGeometry: finite numbers and a map extent with an area.
         if (!bounds.every(Number.isFinite) || !(bounds[2] > bounds[0] && bounds[3] > bounds[1])) return null;
+        // Trust no stored value. project() keeps every point within +-180 on both axes
+        // (|longitude| <= 180, |latitude| < 85), and prepareGeometry takes the bounds from the
+        // points. So the bounds must equal the extent of the points, lie within +-180, and
+        // hold the centers. A point such as [1e300, 1] fails these checks.
+        if (!bounds.every((b, i) => b === extent[i])) return null;
+        if (!bounds.every(b => Math.abs(b) <= 180)) return null;
+        if (!regions.every(({center: [x, y]}) => x >= bounds[0] && x <= bounds[2] && y >= bounds[1] && y <= bounds[3]))
+            return null;
         return {regions, keys, bounds};
     } catch (e) {
         return null;
