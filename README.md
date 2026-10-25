@@ -262,6 +262,11 @@ plain background at each side of the banner. The text stays fully visible.
   after you change the system trust. If the file is missing or empty, the
   updater uses the default trust store.
 - **Language.** The text on the picture is in Ukrainian only.
+- **Memory of GNOME Shell.** GNOME Shell keeps some freed memory after
+  picture changes. The amount stops at a ceiling. See "Resource use".
+- **Freeze risk.** A rare GJS deadlock can freeze GNOME Shell when another
+  program changes a setting at the same moment. See issue
+  [#10](https://github.com/p5ych0/gnome-air-raid-map/issues/10).
 
 ### Resource use
 
@@ -275,7 +280,23 @@ We measured these values on Fedora 44:
   or less. With three different monitors at the cap, a run uses up to 0.95 s
   on a quiet machine. When other programs load the machine, a run can use
   about 1.3 s.
-- Memory of `gnome-shell` over 24 hours: @SOAK@
+- GNOME Shell over 24 hours, at 1920×1080 with the default label mode,
+  compared with a session without the updater:
+  - The updater adds 0.504 % of one CPU core to the Shell service (the
+    Shell and its glycin image loaders).
+  - The memory of `gnome-shell` rises for about 12 hours and then stops at
+    a ceiling. In the last 12 hours, its anonymous memory after one garbage
+    collection stayed between 200 and 240 MB.
+  - The cause is the C library (glibc). It keeps the freed memory of old
+    pictures inside `gnome-shell`, for later use. A call of `malloc_trim(0)`
+    gives this memory back to the system.
+  - The live memory of `gnome-shell` does not grow. In a test of 4,176
+    picture changes, the C library gave each freed picture back to the
+    system at once. After three garbage collections, the memory of
+    `gnome-shell` rose by 7.5 MB in the first 418 changes. In the next
+    3,758 changes, it rose by 1 MB.
+  - The details are in
+    [docs/decisions/2026-10-25-shell-memory.md](docs/decisions/2026-10-25-shell-memory.md).
 - The service limits each run to 300 MB of memory and 25 seconds.
 
 ## Live GNOME Shell extension: in development
@@ -343,7 +364,8 @@ CPU time of each run.
 The 24-hour soak runs the real timer against NEPTUN in three GNOME sessions.
 Two sessions run the updater, and one session is a control without it. The
 header of `tests/leak/soak.sh` gives the full command, which keeps the
-computer awake.
+computer awake. The soak needs `gdb` on the host: each hourly probe calls
+`malloc_trim(0)` in `gnome-shell` of each session.
 
 ```sh
 tests/leak/soak.sh 86400
