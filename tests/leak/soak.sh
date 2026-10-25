@@ -6,10 +6,21 @@
 #   updater            install.sh; the real timer runs the updater every 30 s against NEPTUN
 #   updater-unchanged  the same, with AIR_RAID_MAP_LABEL_MODE=unchanged (a drop-in)
 #   control            the same session without the updater
-# Each samples gnome-shell every 60 s, and makes a full garbage collection in
-# gnome-shell every GNOME_TEST_SOAK_GC_INTERVAL s (default 3600) with a sample 30 s
-# after it (tests/gnome/soak-sampler.sh). Each container stops itself after <seconds>;
-# this script only watches them.
+# Each samples gnome-shell every 60 s, and makes a GC probe in gnome-shell every
+# GNOME_TEST_SOAK_GC_INTERVAL s (default 3600): three proven garbage collections, then
+# malloc_trim(0), then a sample (tests/gnome/soak-sampler.sh). Each container stops
+# itself after <seconds>; this script watches them.
+#
+# The trim: the sampler runs in the container, and the image has no gdb. So the
+# sampler writes <role>/trim-request ("<id> TAB <container PID of gnome-shell>"), and
+# this script answers it with the gdb of the host (GNOME_TEST_SOAK_GDB, default gdb):
+# gdb attaches to the host PID of gnome-shell, uses the libraries of the container
+# (set sysroot /proc/<pid>/root), calls malloc_trim(0) and detaches, with a time limit
+# of 120 s. gnome-shell runs as the test user, a subordinate UID of the host user, so
+# gdb runs in the user namespace of rootless Podman (podman unshare): outside it, gdb
+# cannot read the memory of gnome-shell. The answer is <role>/trim-result ("<id> TAB
+# ok|fail TAB <detail>"); the gdb output goes to <role>/trim-gdb.log. Without gdb, the
+# answer is "fail".
 #
 # Usage: tests/leak/soak.sh <seconds>
 #   Start the 24-hour soak in the background, with no host suspend:
@@ -44,6 +55,9 @@ POLL=${GNOME_TEST_SOAK_POLL:-30}
 # (MAX_SAMPLE_GAP_S), so the watcher reports it at once.
 MAX_SAMPLE_AGE=150
 PREFIX=gnome-air-raid-map-soak-
+GDB=${GNOME_TEST_SOAK_GDB:-gdb}
+# The sampler waits 150 s for the answer.
+TRIM_LIMIT=120
 
 [ $# -eq 1 ] && [[ $1 =~ ^[1-9][0-9]*$ ]] || { echo "usage: $0 <seconds>" >&2; exit 2; }
 seconds=$1
@@ -70,7 +84,7 @@ out_of() {
 }
 
 declare -A container=() pid=()
-finished=0
+finished=0 trim_pid=
 # One podman rm for all containers: it stops them in parallel.
 remove_all() {
     local role names=()
@@ -81,6 +95,7 @@ remove_all() {
 }
 on_exit() {
     local code=$?
+    [ -z "$trim_pid" ] || kill "$trim_pid" 2> /dev/null
     [ $finished -eq 1 ] && return
     log "FAIL: soak.sh stopped before the end (exit status $code); removing the containers"
     echo "soak.sh stopped at $(date -Is), exit status $code" >> "$dir/aborted"
@@ -119,6 +134,81 @@ for role in "${ROLES[@]}"; do
     fi
 done
 [ $status -eq 0 ] || exit 1
+
+# host_pid <role> <container PID>: the host PID of a process in the container of the
+# role, from the NSpid line of /proc/<pid>/status. (podman top shows "?" for the
+# processes of a subordinate UID.)
+host_pid() {
+    local init ns hpid
+    init=$(podman inspect -f '{{.State.Pid}}' "${container[$1]}" 2> /dev/null)
+    ns=$(readlink "/proc/$init/ns/pid" 2> /dev/null) || return 0
+    # The last NSpid field is the PID in the innermost namespace. Other containers can
+    # have the same container PID, so the PID namespace must be the one of the container.
+    for hpid in $(awk -v p="$2" '/^NSpid:/ && $NF == p { print $2 }' /proc/[0-9]*/status 2> /dev/null); do
+        if [ "$(readlink "/proc/$hpid/ns/pid" 2> /dev/null)" = "$ns" ]; then
+            echo "$hpid"
+            return 0
+        fi
+    done
+}
+
+# trim <role> <container PID>: calls malloc_trim(0) in gnome-shell of the container of
+# the role, with the gdb of the host. Prints "ok TAB <detail>" or "fail TAB <detail>".
+trim() {
+    local role=$1 cpid=$2 hpid output code value
+    if ! command -v "$GDB" > /dev/null; then
+        printf 'fail\t%s is not installed on the host' "$GDB"
+        return
+    fi
+    hpid=$(host_pid "$role" "$cpid")
+    if ! [[ $hpid =~ ^[0-9]+$ ]]; then
+        printf 'fail\tno host PID for the container PID %s' "$cpid"
+        return
+    fi
+    output=$(podman unshare timeout "$TRIM_LIMIT" "$GDB" -nx -batch -iex 'set debuginfod enabled off' \
+        -iex "set sysroot /proc/$hpid/root" -p "$hpid" -ex 'call (int) malloc_trim(0)' -ex detach 2>&1)
+    code=$?
+    { echo "# $(date -Is): container PID $cpid, host PID $hpid, gdb exit status $code"; echo "$output"; } \
+        >> "$(out_of "$role")/trim-gdb.log"
+    # gdb prints the return value of the call as "$1 = <value>".
+    value=$(sed -n 's/^\$1 = \(-\?[0-9]\+\)$/\1/p' <<< "$output" | head -n 1)
+    if [ $code -eq 124 ]; then
+        printf 'fail\tgdb stopped at the time limit of %s s' "$TRIM_LIMIT"
+    elif [ -z "$value" ]; then
+        printf 'fail\tgdb did not call malloc_trim (exit status %s; see trim-gdb.log)' "$code"
+    elif ! grep -q 'detached' <<< "$output"; then
+        printf 'fail\tgdb did not detach (exit status %s; see trim-gdb.log)' "$code"
+    else
+        printf 'ok\tmalloc_trim returned %s' "$value"
+    fi
+}
+
+# answer <role> <id> <container PID>: writes <role>/trim-result for the request <id>.
+answer() {
+    local role=$1 id=$2 result file
+    file=$(out_of "$role")/trim-result
+    result=$(trim "$role" "$3")
+    printf '%s\t%s\n' "$id" "$result" > "$file.tmp" && mv -f "$file.tmp" "$file"
+    log "$role: malloc_trim(0) in gnome-shell: ${result/$'\t'/: }"
+}
+
+# Answers each new trim request of a sampler; runs in the background for the whole soak.
+trim_server() {
+    local role id cpid request
+    local -A served=()
+    while :; do
+        for role in "${ROLES[@]}"; do
+            request=$(out_of "$role")/trim-request
+            [ -s "$request" ] && IFS=$'\t' read -r id cpid < "$request" || continue
+            [ -n "$id" ] && [ "$id" != "${served[$role]:-}" ] || continue
+            served[$role]=$id
+            answer "$role" "$id" "$cpid" &
+        done
+        sleep 1
+    done
+}
+trim_server &
+trim_pid=$!
 
 # The last line of a TSV file of the soak, or nothing.
 last_line() {
@@ -217,5 +307,6 @@ while [ ${#done_role[@]} -lt ${#ROLES[@]} ]; do
     fi
 done
 [ $printed -eq 1 ] || checkpoint
+kill "$trim_pid" 2> /dev/null
 finished=1
 log "done; evaluate with: gjs -m tests/leak/summarize.js --soak --expect $seconds $dir"

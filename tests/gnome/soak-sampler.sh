@@ -19,15 +19,31 @@
 #                MemorySwapPeak, CPUUsageNSec. The sampler checks every 5 s; a run
 #                starts 30 s after the previous one, so it sees every run.
 #   gc.tsv       every GNOME_TEST_SOAK_GC_INTERVAL s (default 3600; the first at that
-#                time): a full garbage collection in gnome-shell, through
-#                org.gnome.Shell.Eval (the Shell runs with --unsafe-mode). One line:
-#                PSS, anonymous PSS, shmem PSS and RSS before the collection and 30 s
-#                after it, and "collected": the proof that the collection ran. Before
-#                it, an Eval creates an object that only a WeakRef holds; a second
-#                Eval runs imports.system.gc() and then checks that the WeakRef is
-#                empty (true). Without a collection, the object stays (false). The
-#                two Evals are two jobs, so the WeakRef does not keep the object.
-#                The sampler does not wait for the 30 s: it samples and polls as usual.
+#                time): a GC probe of the live memory of gnome-shell (spec 7.4, check 5;
+#                docs/decisions/2026-10-25-shell-memory.md). glibc keeps the freed
+#                picture buffers in gnome-shell, and one garbage collection does not
+#                free all dead pictures. So the probe:
+#                1. In an updater container, waits until a run of the updater ends (60 s
+#                   at most), and then 5 s more: no picture change falls in the probe.
+#                2. Takes the sample "before".
+#                3. Makes 3 proven garbage collections in gnome-shell, through
+#                   org.gnome.Shell.Eval (the Shell runs with --unsafe-mode), 2 s apart.
+#                   Proof: an Eval creates an object that only a WeakRef holds; a second
+#                   Eval runs imports.system.gc() and then checks that the WeakRef is
+#                   empty (true). Without a collection, the object stays (false). The
+#                   two Evals are two jobs, so the WeakRef does not keep the object.
+#                   Samples "gc1" (after the first) and "gc3" (after the third).
+#                4. Asks the host for malloc_trim(0) in gnome-shell (the image has no
+#                   gdb): it writes /out/trim-request and waits 150 s at most for
+#                   /out/trim-result (tests/leak/soak.sh answers it).
+#                5. Waits 5 s and takes the sample "trim": the live memory.
+#                One line: the start time, gnome-shell PID, "collected" (the result of
+#                each collection: true, false or error; or "shell restarted"),
+#                gc_passes (the number of proven collections), trim (ok or fail) and
+#                trim_detail (the return value of malloc_trim, or the reason of the
+#                failure), PSS, anonymous PSS, shmem PSS and RSS of the four samples,
+#                and the time of the last sample. The probe runs in the background: the
+#                sampler samples and polls as usual.
 #   journal.txt        the journalctl --user lines of the two units.
 #   shell-journal.txt  the journalctl --user lines of gnome-test-shell.service.
 #   journal-user-end.txt  the whole user journal, at the end.
@@ -83,24 +99,78 @@ shell_eval() {
     esac
 }
 
-# The first half of a GC probe: the sample before, the proof object, the collection.
-gc_start() {
-    gc_pid=$(shell_pid)
-    gc_epoch=$(date +%s)
-    gc_before=$(memory "$gc_pid")
+# The GC probe (see gc.tsv above).
+GC_PASSES=3
+GC_PASS_WAIT=2
+TRIM_WAIT=150
+# A probe ends before the end of the sampler: it starts 300 s before the end at the latest.
+PROBE_MARGIN=300
+
+# One proven garbage collection in gnome-shell: prints true, false or error.
+gc_pass() {
     shell_eval 'globalThis.__soakProbe = new WeakRef({}); true' > /dev/null
-    gc_collected=$(shell_eval 'imports.system.gc(); globalThis.__soakProbe.deref() === undefined')
-    gc_due=$((gc_epoch + 30))
+    shell_eval 'imports.system.gc(); globalThis.__soakProbe.deref() === undefined'
 }
 
-# The second half, 30 s later: the sample after, and one line in gc.tsv.
-gc_end() {
-    local pid
+# In an updater container: waits until a run of the updater ends, 60 s at most. A run
+# starts every 30 s and takes about 0.5 s, so the probe that follows has no picture change.
+wait_run_end() {
+    local unit=${UNITS[0]} id0 state0 id state i
+    id0=$(user_show -p InvocationID --value "$unit" 2> /dev/null)
+    [ -n "$id0" ] || return 0
+    state0=$(user_show -p ActiveState --value "$unit" 2> /dev/null)
+    for ((i = 0; i < 60; i++)); do
+        id=$(user_show -p InvocationID --value "$unit" 2> /dev/null)
+        state=$(user_show -p ActiveState --value "$unit" 2> /dev/null)
+        case $state in
+            inactive | failed)
+                # A new run that ended, or the end of the run that was active at the start.
+                if [ "$id" != "$id0" ] || [ "$state0" = activating ]; then return 0; fi ;;
+        esac
+        sleep 1
+    done
+}
+
+# trim_request <pid>: asks tests/leak/soak.sh on the host for malloc_trim(0) in gnome-shell
+# and waits for the answer. Prints "ok TAB <detail>" or "fail TAB <detail>".
+trim_request() {
+    local id i rid status detail
+    id=$(date +%s%N)
+    printf '%s\t%s\n' "$id" "$1" > "$OUT/trim-request.tmp" && mv -f "$OUT/trim-request.tmp" "$OUT/trim-request"
+    for ((i = 0; i < TRIM_WAIT; i++)); do
+        sleep 1
+        [ -s "$OUT/trim-result" ] && IFS=$'\t' read -r rid status detail < "$OUT/trim-result" || continue
+        if [ "$rid" = "$id" ]; then
+            printf '%s\t%s' "$status" "$detail"
+            return
+        fi
+    done
+    printf 'fail\tno answer from the host in %s s (tests/leak/soak.sh answers the trim requests)' "$TRIM_WAIT"
+}
+
+# One GC probe and its line in gc.tsv. It runs in the background.
+gc_probe() {
+    local pid epoch before gc1 gc3 trim after results=() passes=0 result i
+    wait_run_end
+    sleep 5
     pid=$(shell_pid)
-    [ "$pid" = "$gc_pid" ] || gc_collected="shell restarted"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$gc_epoch" "$((gc_epoch - start))" "$pid" "$gc_collected" \
-        "$gc_before" "$(memory "$pid")" >> "$OUT/gc.tsv"
-    gc_due=0
+    epoch=$(date +%s)
+    before=$(memory "$pid")
+    for ((i = 1; i <= GC_PASSES; i++)); do
+        result=$(gc_pass)
+        results+=("$result")
+        [ "$result" != true ] || passes=$((passes + 1))
+        sleep "$GC_PASS_WAIT"
+        [ $i -ne 1 ] || gc1=$(memory "$pid")
+    done
+    gc3=$(memory "$pid")
+    trim=$(trim_request "$pid")
+    sleep 5
+    after=$(memory "$pid")
+    [ "$(shell_pid)" = "$pid" ] || results=("shell restarted")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$epoch" "$((epoch - start))" "$pid" \
+        "$(IFS=,; echo "${results[*]}")" "$passes" "$trim" "$before" "$gc1" "$gc3" "$after" "$(date +%s)" \
+        >> "$OUT/gc.tsv"
 }
 
 sample() {
@@ -160,8 +230,9 @@ printf '# %s\n' "$(printf '%s\t' epoch elapsed_s shell_pid shell_pss_kb shell_ps
     metadata_write_bytes)" \
     | sed 's/\t$//' > "$OUT/samples.tsv"
 printf '# start_epoch\tunit\tinvocation\tresult\tstatus\tseconds\tpeak_bytes\tswap_peak_bytes\tcpu_ns\n' > "$OUT/runs.tsv"
-printf '# %s\n' "$(printf '%s\t' epoch elapsed_s shell_pid collected pss_before_kb anon_before_kb shmem_before_kb \
-    rss_before_kb pss_after_kb anon_after_kb shmem_after_kb rss_after_kb)" | sed 's/\t$//' > "$OUT/gc.tsv"
+printf '# %s\n' "$(printf '%s\t' epoch elapsed_s shell_pid collected gc_passes trim trim_detail \
+    {pss,anon,shmem,rss}_before_kb {pss,anon,shmem,rss}_gc1_kb {pss,anon,shmem,rss}_gc3_kb \
+    {pss,anon,shmem,rss}_trim_kb end_epoch)" | sed 's/\t$//' > "$OUT/gc.tsv"
 : > "$OUT/journal.txt"
 : > "$OUT/shell-journal.txt"
 rm -f /var/tmp/gnome-test-soak-*.cursor
@@ -171,25 +242,27 @@ echo "$(date -Is) sampler start: $seconds s" >> "$OUT/sampler.log"
 gc_interval=${GNOME_TEST_SOAK_GC_INTERVAL:-3600}
 next=$start
 next_gc=$((start + gc_interval))
-gc_due=0
+probe_pid=0
 while :; do
     now=$(date +%s)
     if [ "$now" -ge "$next" ]; then
         sample
         next=$((next + 60))
     fi
-    if [ $gc_due -gt 0 ] && [ "$(date +%s)" -ge $gc_due ]; then
-        gc_end
+    if [ $probe_pid -gt 0 ] && ! kill -0 $probe_pid 2> /dev/null; then
+        wait $probe_pid
+        probe_pid=0
     fi
-    # The last probe must end 30 s before the end of the sampler.
-    if [ $gc_due -eq 0 ] && [ "$(date +%s)" -ge $next_gc ] && [ $next_gc -le $((end - 35)) ]; then
-        gc_start
+    if [ $probe_pid -eq 0 ] && [ "$(date +%s)" -ge $next_gc ] && [ $next_gc -le $((end - PROBE_MARGIN)) ]; then
+        gc_probe &
+        probe_pid=$!
         next_gc=$((next_gc + gc_interval))
     fi
     poll_runs
     [ "$now" -lt "$end" ] || break
     sleep 5
 done
+[ $probe_pid -eq 0 ] || wait $probe_pid
 echo "$(date -Is) sampler end" >> "$OUT/sampler.log"
 as_user_bare journalctl --user --no-pager -o short-iso-precise > "$OUT/journal-user-end.txt" 2>&1
 if [ "${GNOME_TEST_SOAK_POWEROFF:-1}" = 1 ]; then
