@@ -242,8 +242,8 @@ test('23 probes on time pass the coverage check', () => {
     assertEqual(result.status, 0, 'exit status');
 });
 
-test('a retried probe that is late (11 minutes, within 3 tries of 240 s) passes the coverage check', () => {
-    // The first try of the probe at hour 10 lost two tries: it starts 700 s after its time.
+test('a retried probe that is late (about 12 minutes, within 3 tries of 240 s) passes the coverage check', () => {
+    // The probe at hour 10 lost two tries: its third try starts 700 s after its time.
     const times = hourly(1, 23).map(t => (t === 10 * 3600 ? t + 700 : t));
     const result = soak({hours: 24, probeTimes: times}, ['--expect', '86400']);
     assertEqual(verdictOf(result, COVER), 'PASS');

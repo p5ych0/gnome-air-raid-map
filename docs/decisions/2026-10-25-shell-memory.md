@@ -223,6 +223,9 @@ Other parts of check 5:
 - A probe fails the data check if it has fewer than three proven GC
   passes, if it has no good trim, or if an updater run overlapped each of
   its 3 tries. The summary lists the reason, and the sample does not count.
+- The probes must cover the soak: a probe every interval, with 720 s of
+  lateness allowed (3 tries of 240 s) and 720 s at the end. The summary
+  fails the data check, with the reason, if the probes do not cover it.
 - The CPU part of check 5 does not change: the updater adds less than 1 %
   of one core to the Shell service with its children.
 - The summary prints the raw trends and the one-GC trends as information.

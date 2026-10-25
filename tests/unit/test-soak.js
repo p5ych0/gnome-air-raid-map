@@ -148,9 +148,12 @@ test('the watcher accepts a new sample, and an old sample after the sampler ende
 
 test('the watcher reports a sampler that wrote no sample since the start', () => {
     // The container of the control role runs, but its sampler wrote only the header. The age
-    // counts from the time the watcher registered the container.
+    // counts from the time the watcher registered the container. The updater samplers wrote
+    // "sampler end" at once, so the age limit of 2 s does not apply to them while their
+    // containers run for 3 s.
     const {status, output, lines} = soakWith({
-        updater: {age: 0, stopAfter: 3}, 'updater-unchanged': {age: 0, stopAfter: 3}, control: {age: null},
+        updater: {age: 0, ended: true, stopAfter: 3}, 'updater-unchanged': {age: 0, ended: true, stopAfter: 3},
+        control: {age: null},
     }, {GNOME_TEST_SOAK_MAX_SAMPLE_AGE: '2'});
     const stopped = lines.filter(line => / FAIL: control: the sampler stopped \(no sample since the start, \d+ s ago, more than 2 s\)/.test(line));
     assertEqual(stopped.length, 1, `FAIL lines for the control sampler in:\n${output}`);
@@ -173,40 +176,71 @@ sleep 30 &
 wait $!
 `;
 
-test('SIGTERM during the start removes the containers that the launchers create, also unregistered ones', () => {
+// Runs a copy of soak.sh with the fake launcher runSystemd, waits until 3 files named marker
+// are in the output folders, sends SIGTERM to soak.sh, and waits for it. Then it waits
+// afterS s more, for a process that survived. Returns the exit status, the output, and the
+// sorted lines of "created" and "removed" (the names that the fake podman has).
+function termWith(runSystemd, marker, afterS) {
     const dir = GLib.dir_make_tmp('air-raid-soak-XXXXXX');
     try {
         write(`${dir}/tests/leak/soak.sh`, GLib.file_get_contents(SOAK)[1]);
         write(`${dir}/tests/gnome/Containerfile.fedora44-systemd`, '');
-        write(`${dir}/tests/gnome/run-systemd.sh`, SLOW_RUN_SYSTEMD, 0o755);
+        write(`${dir}/tests/gnome/run-systemd.sh`, runSystemd, 0o755);
         write(`${dir}/bin/podman`, PODMAN, 0o755);
         const launcher = new Gio.SubprocessLauncher({
             flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE,
         });
         launcher.setenv('PATH', `${dir}/bin:${GLib.getenv('PATH')}`, true);
-        // Wait until all 3 launchers run, send SIGTERM to soak.sh, and wait for it.
         const script = `bash "${dir}/tests/leak/soak.sh" 5 & soak=$!
 for ((i = 0; i < 100; i++)); do
-    [ "$(find "${dir}/tests/gnome/out" -name starting 2> /dev/null | wc -l)" -ge 3 ] && break
+    [ "$(find "${dir}/tests/gnome/out" -name ${marker} 2> /dev/null | wc -l)" -ge 3 ] && break
     sleep 0.1
 done
 kill -TERM $soak
-wait $soak`;
+wait $soak
+status=$?
+sleep ${afterS}
+exit $status`;
         const process = launcher.spawnv(['timeout', `${LIMIT_S}`, 'bash', '-c', script]);
         const [, output] = process.communicate_utf8(null, null);
         const read = path => (GLib.file_test(path, GLib.FileTest.EXISTS)
             ? new TextDecoder().decode(GLib.file_get_contents(path)[1]) : '');
         const names = text => text.split('\n').filter(line => line).sort();
-        const created = names(read(`${dir}/created`));
-        const removed = names(read(`${dir}/removed`));
-        assertEqual(created.length, 3, `containers that the launchers created; output:\n${output}`);
-        assertTrue(created.every(name => /^gnome-air-raid-map-soak-\d{8}-\d{6}-(updater|updater-unchanged|control)-\d+$/.test(name)),
-            `names of the created containers: ${created}`);
-        assertEqual(removed.join(' '), created.join(' '), `removed containers; output:\n${output}`);
-        assertEqual(process.get_exit_status(), 143, 'exit status of soak.sh');
+        return {
+            status: process.get_exit_status(), output,
+            created: names(read(`${dir}/created`)), removed: names(read(`${dir}/removed`)),
+        };
     } finally {
         removeTree(dir);
     }
+}
+
+test('SIGTERM during the start removes the containers that the launchers create, also unregistered ones', () => {
+    const {status, output, created, removed} = termWith(SLOW_RUN_SYSTEMD, 'starting', 0);
+    assertEqual(created.length, 3, `containers that the launchers created; output:\n${output}`);
+    assertTrue(created.every(name => /^gnome-air-raid-map-soak-\d{8}-\d{6}-\d+-(updater|updater-unchanged|control)-\d+$/.test(name)),
+        `names of the created containers: ${created}`);
+    assertEqual(removed.join(' '), created.join(' '), `removed containers; output:\n${output}`);
+    assertEqual(status, 143, 'exit status of soak.sh');
+});
+
+// The launcher starts a child (a bash), and the child starts a grandchild that creates the
+// container 1 s later, as the podman run of run-systemd.sh does. A kill of the launcher and
+// its direct children leaves the grandchild alive. soak.sh stops the whole process group.
+const DEEP_RUN_SYSTEMD = `#!/bin/bash
+here=$(cd "$(dirname "$0")" && pwd)
+out=$here/out/$GNOME_TEST_OUT_NAME
+mkdir -p "$out"
+bash -c '( touch "$1/grandchild"; sleep 1; echo "$2" >> "$3" ) & wait' child "$out" \
+    "gnome-air-raid-map-\${GNOME_TEST_OUT_NAME//\//-}-$$" "$here/../../created" &
+wait
+`;
+
+test('SIGTERM during the start stops the grandchildren of the launchers too', () => {
+    const {status, output, created, removed} = termWith(DEEP_RUN_SYSTEMD, 'grandchild', 2);
+    assertEqual(created.join(' '), '', `containers that a grandchild created after the stop; output:\n${output}`);
+    assertEqual(removed.join(' '), '', 'removed containers');
+    assertEqual(status, 143, 'exit status of soak.sh');
 });
 
 // The sampler runs in the container, and the image has no gdb. So soak.sh answers the trim

@@ -29,9 +29,10 @@
 #   Watch:    tail -n +1 -F tests/gnome/out/soak-latest/soak.log | grep --line-buffered 'soak:'
 #   Evaluate: gjs -m tests/leak/summarize.js --soak --expect 86400 tests/gnome/out/soak-latest
 #
-# Output folder: tests/gnome/out/soak-<YYYYmmdd-HHMMSS>/ with one folder for each
-# role and soak.log; tests/gnome/out/soak-latest is a link to it. A new run never
-# changes the folder of an earlier run. The script refuses to start while the
+# Output folder: tests/gnome/out/soak-<YYYYmmdd-HHMMSS in UTC>-<PID of this script>/ with
+# one folder for each role and soak.log; tests/gnome/out/soak-latest is a link to it. The
+# PID makes the name (and so the container names) unique to this run, also for two soaks
+# that start in the same second. A new run never changes the folder of an earlier run. The script refuses to start while the
 # containers of another soak run.
 # soak.log: a "soak: <time> <elapsed> elapsed; ..." checkpoint line every
 # GNOME_TEST_SOAK_CHECKPOINT s (default 600); at once (checked every
@@ -78,7 +79,7 @@ if podman ps --format '{{.Names}}' | grep -q "^$PREFIX"; then
     podman ps --format '{{.Names}}' | grep "^$PREFIX" | sed 's/^/  /'
     exit 1
 fi
-run=soak-$(date +%Y%m%d-%H%M%S)
+run=soak-$(date -u +%Y%m%d-%H%M%S)-$$
 dir=$repo/tests/gnome/out/$run
 mkdir -p "$repo/tests/gnome/out"
 mkdir "$dir" || { log "FAIL: $dir exists"; exit 1; }
@@ -95,42 +96,44 @@ finished=0 trim_pid=
 # <name> = $run/<role>. So all containers of this soak start with this prefix.
 RUN_PREFIX=gnome-air-raid-map-${run//\//-}-
 
-# descendants <PID>: the PIDs of all processes below it.
-descendants() {
-    local child
-    for child in $(pgrep -P "$1" 2> /dev/null); do
-        echo "$child"
-        descendants "$child"
-    done
-}
-
-# Stops the launchers that still run, with their child processes (podman), and waits
-# for them. A container that a launcher was about to create then exists, or never will.
+# Stops the launchers that still run, with all their processes, and waits for them. Each
+# launcher is the leader of its own process group (set -m at the launch), so one kill
+# reaches every process that it forked, also one that it forked a moment before. A
+# container that a launcher was about to create then exists, or never will.
+# The launchers come from "jobs -p", not from pid[]: bash adds a job to its table when it
+# forks, and a trap runs only between statements. So a signal after the fork and before
+# pid[$role]=$! still finds the launcher. A job that is not a group leader (the trim
+# server, a sleep) gets no signal, because kill -- -<PID> fails for it.
 stop_launchers() {
-    local role launchers=() all=() p n alive
-    for role in "${ROLES[@]}"; do
-        [ -n "${pid[$role]:-}" ] || continue
-        launchers+=("${pid[$role]}")
-        all+=("${pid[$role]}" $(descendants "${pid[$role]}"))
+    local p n alive launchers=()
+    for p in $(jobs -p); do
+        ! kill -TERM -- "-$p" 2> /dev/null || launchers+=("$p")
     done
-    [ ${#all[@]} -gt 0 ] || return 0
-    kill "${all[@]}" 2> /dev/null
+    [ ${#launchers[@]} -gt 0 ] || return 0
     # A process that ignores SIGTERM gets SIGKILL after 5 s.
     for ((n = 0; n < 50; n++)); do
         alive=0
-        for p in "${all[@]}"; do ! kill -0 "$p" 2> /dev/null || alive=1; done
+        for p in "${launchers[@]}"; do ! kill -0 -- "-$p" 2> /dev/null || alive=1; done
         [ $alive -eq 1 ] || break
         sleep 0.1
     done
-    [ $alive -eq 0 ] || kill -KILL "${all[@]}" 2> /dev/null
+    for p in "${launchers[@]}"; do kill -KILL -- "-$p" 2> /dev/null; done
     wait "${launchers[@]}" 2> /dev/null
 }
 
-# One podman rm for all containers of this soak: it stops them in parallel.
+# One podman rm for all containers of this soak: it stops them in parallel. The names are
+# the registered ones and every name with the prefix of this soak (a launcher can create
+# its container before it reports the name). The registered names stay if the listing fails.
 remove_all() {
-    local names
-    names=$(podman ps -a --filter "name=^$RUN_PREFIX" --format '{{.Names}}' 2> /dev/null)
-    [ -z "$names" ] || podman rm -f -t 5 $names > /dev/null 2>&1
+    local name names=() listed=()
+    local -A seen=()
+    mapfile -t listed < <(podman ps -a --filter "name=^$RUN_PREFIX" --format '{{.Names}}' 2> /dev/null)
+    for name in "${container[@]}" "${listed[@]}"; do
+        [ -n "$name" ] && [ -z "${seen[$name]:-}" ] || continue
+        seen[$name]=1
+        names+=("$name")
+    done
+    [ ${#names[@]} -eq 0 ] || podman rm -f -t 5 "${names[@]}" > /dev/null 2>&1
 }
 on_exit() {
     local code=$?
@@ -155,18 +158,19 @@ if ! podman build -t "localhost/gnome-air-raid-map-test:$IMAGE-systemd" - \
     exit 1
 fi
 # Start all containers at the same time. run-systemd.sh writes the container name
-# to <output>/container.
+# to <output>/container. set -m puts each launcher in a process group of its own (see
+# stop_launchers).
+set -m
 for role in "${ROLES[@]}"; do
     GNOME_TEST_DETACH=1 GNOME_TEST_OUT_NAME=$run/$role GNOME_TEST_SOAK_ROLE=$role \
         GNOME_TEST_SOAK_SECONDS=$seconds "$repo/tests/gnome/run-systemd.sh" "$IMAGE" soak 1920x1080 \
-        > "$dir/start-$role.log" 2>&1 &
+        < /dev/null > "$dir/start-$role.log" 2>&1 &
     pid[$role]=$!
 done
+set +m
 status=0
 for role in "${ROLES[@]}"; do
-    wait "${pid[$role]}" && started=1 || started=0
-    unset "pid[$role]"
-    if [ $started -eq 1 ] && [ -s "$(out_of "$role")/container" ]; then
+    if wait "${pid[$role]}" && [ -s "$(out_of "$role")/container" ]; then
         container[$role]=$(cat "$(out_of "$role")/container")
         registered[$role]=$(date +%s)
         log "$role: started container ${container[$role]}"

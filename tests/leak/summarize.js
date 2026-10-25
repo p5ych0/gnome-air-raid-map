@@ -19,6 +19,11 @@
 //   3 proven GC passes, a malloc_trim(0) that ran, and a sample after it. A failed probe
 //   is listed with its reason, and its sample does not count. A probe that an updater run
 //   overlapped in each of its 3 tries (the sampler repeats it) is a failed probe.
+//   The probes must cover the soak: the interval is the "GC probe every <n> s" of
+//   soak-info.txt (3600 if it is missing); there is a probe every interval, with 720 s of
+//   lateness allowed (3 tries of 240 s) and 720 s at the end (the end margin of the
+//   sampler), each added to the interval. The time of the soak is --expect, or else the
+//   last sample.
 //   Updater runs: no gap between run starts above 90 s (with the gaps from the first
 //   sample to the first run and from the last run to the last sample); at least 90 %
 //   of the runs that 30 s steps allow (one run of slack at the end); MemoryPeak
