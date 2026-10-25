@@ -2,7 +2,7 @@
 // XDG paths, atomic JSON files and the boundary cache.
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import {prepareGeometry} from '../core/mapdata.js';
+import {prepareGeometry, regionLabelPoint} from '../core/mapdata.js';
 import {getJson} from './net.js';
 
 const APP = 'gnome-air-raid-map';
@@ -168,6 +168,12 @@ export function readPrepared(path, version, code = codeVersion()) {
                 }
                 polygons.push(polygon);
             }
+            // The center must be the label point that prepareGeometry computes from the stored
+            // outer rings: the same doubles give the same result, bit for bit. A region with no
+            // ring of |area| > 1e-10 has no label point. prepareGeometry rejects such a region,
+            // and a box of 5e-324 by 5e-324 would give an infinite map scale.
+            const labelPoint = regionLabelPoint(polygons);
+            if (!labelPoint || labelPoint[0] !== center[0] || labelPoint[1] !== center[1]) return null;
             regions.push({key, label, polygons, center});
         }
         if (k !== numbers.length) return null;
@@ -176,12 +182,10 @@ export function readPrepared(path, version, code = codeVersion()) {
         if (!bounds.every(Number.isFinite) || !(bounds[2] > bounds[0] && bounds[3] > bounds[1])) return null;
         // Trust no stored value. project() keeps every point within +-180 on both axes
         // (|longitude| <= 180, |latitude| < 85), and prepareGeometry takes the bounds from the
-        // points. So the bounds must equal the extent of the points, lie within +-180, and
-        // hold the centers. A point such as [1e300, 1] fails these checks.
+        // points. So the bounds must equal the extent of the points and lie within +-180. A
+        // point such as [1e300, 1] fails these checks.
         if (!bounds.every((b, i) => b === extent[i])) return null;
         if (!bounds.every(b => Math.abs(b) <= 180)) return null;
-        if (!regions.every(({center: [x, y]}) => x >= bounds[0] && x <= bounds[2] && y >= bounds[1] && y <= bounds[3]))
-            return null;
         return {regions, keys, bounds};
     } catch (e) {
         return null;

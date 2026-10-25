@@ -166,11 +166,13 @@ test('a trim request fails with the reason when gdb is not installed on the host
 
 // The GC probe of tests/gnome/soak-sampler.sh. The sampler runs on the host in a temporary
 // folder with a fake id, getent, runuser, systemctl, gdbus, journalctl and sleep, so it
-// needs no container and no gnome-shell. The fake gnome-shell is a sleep process. The fake
-// gdbus counts its calls (6 for each try of a probe: 2 Evals for each of 3 collections) and,
-// at the calls in the lists, it changes the InvocationID of the updater service (bump) or
-// its ActiveState (activate, idle), as a run of the updater does. The fake sleep takes
-// 10 ms, and it answers the trim request of the sampler, as tests/leak/soak.sh does.
+// needs no container and no gnome-shell, and its journal cursors are in that folder. The
+// fake gnome-shell is a sleep process. The fake gdbus counts its calls (6 for each try of a
+// probe: 2 Evals for each of 3 collections) and, at the calls in the lists, it changes the
+// InvocationID of the updater service (bump) or its ActiveState (activate, idle), as a run
+// of the updater does, or it stops the fake gnome-shell service (restart: MainPID 0). The
+// fake sleep takes 10 ms, and it answers the trim request of the sampler, as
+// tests/leak/soak.sh does.
 const SAMPLER = GLib.filename_from_uri(
     GLib.Uri.resolve_relative(import.meta.url, '../gnome/soak-sampler.sh', GLib.UriFlags.NONE))[0];
 const REAL_SLEEP = GLib.find_program_in_path('sleep');
@@ -182,9 +184,9 @@ const FAKES = {
     runuser: 'shift 5; while [[ $1 == *=* ]]; do shift; done; exec "$@"',
     sleep: `id=$(cut -f1 "$OUT/trim-request" 2> /dev/null) && printf '%s\\tok\\tmalloc_trim returned 1\\n' "$id" > "$OUT/trim-result"
         exec ${REAL_SLEEP} 0.01`,
-    systemctl: `shift
-        [ "$1" != poweroff ] || exit 0
-        shift
+    // systemctl poweroff --no-block, or systemctl --user show <options> <unit>.
+    systemctl: `[ "$1" != poweroff ] || exit 0
+        shift 2
         props=() value=0 unit=
         while [ $# -gt 0 ]; do
             case $1 in
@@ -198,7 +200,7 @@ const FAKES = {
         done
         for prop in "\${props[@]}"; do
             case $unit:$prop in
-                gnome-test-shell.service:MainPID) v=$FAKE_SHELL_PID ;;
+                gnome-test-shell.service:MainPID) v=$(cat "$STATE/pid" 2> /dev/null || echo "$FAKE_SHELL_PID") ;;
                 gnome-air-raid-map.service:InvocationID) v=$(cat "$STATE/id" 2> /dev/null) ;;
                 gnome-air-raid-map.service:ActiveState) v=$(cat "$STATE/active" 2> /dev/null) ;;
                 *) v= ;;
@@ -210,20 +212,22 @@ const FAKES = {
         for c in $BUMP; do [ "$c" != $n ] || echo "bump-$n" > "$STATE/id"; done
         for c in $ACTIVATE; do [ "$c" != $n ] || echo activating > "$STATE/active"; done
         for c in $IDLE; do [ "$c" != $n ] || echo inactive > "$STATE/active"; done
+        for c in $RESTART; do [ "$c" != $n ] || echo 0 > "$STATE/pid"; done
         echo "(true, 'true')"`,
 };
 
 // Runs one GC probe of the sampler. updater: the updater service exists (the control
-// container has none). bump, activate, idle: the calls of the fake gdbus that change the
-// service. Returns the lines of gc.tsv (without the header), the number of gdbus calls and
-// the lines of sampler.log.
-function probeWith({updater = true, bump = [], activate = [], idle = []} = {}) {
+// container has none). bump, activate, idle, restart: the calls of the fake gdbus that
+// change the services. Returns the lines of gc.tsv (without the header), the number of
+// gdbus calls and the lines of sampler.log.
+function probeWith({updater = true, bump = [], activate = [], idle = [], restart = []} = {}) {
     const dir = GLib.dir_make_tmp('air-raid-sampler-XXXXXX');
     const shell = new Gio.Subprocess({argv: [REAL_SLEEP, '60'], flags: Gio.SubprocessFlags.NONE});
     shell.init(null);
     try {
         GLib.mkdir_with_parents(`${dir}/state`, 0o700);
         GLib.mkdir_with_parents(`${dir}/out`, 0o700);
+        GLib.mkdir_with_parents(`${dir}/cursors`, 0o700);
         if (updater) {
             GLib.file_set_contents(`${dir}/state/id`, 'start\n');
             GLib.file_set_contents(`${dir}/state/active`, 'inactive\n');
@@ -236,7 +240,8 @@ function probeWith({updater = true, bump = [], activate = [], idle = []} = {}) {
         const env = {
             PATH: `${dir}/bin:${GLib.getenv('PATH')}`, OUT: `${dir}/out`, STATE: `${dir}/state`,
             FAKE_SHELL_PID: shell.get_identifier(), BUMP: bump.join(' '), ACTIVATE: activate.join(' '),
-            IDLE: idle.join(' '), GNOME_TEST_SOAK_OUT: `${dir}/out`, GNOME_TEST_SOAK_POWEROFF: '0',
+            IDLE: idle.join(' '), RESTART: restart.join(' '), GNOME_TEST_SOAK_OUT: `${dir}/out`,
+            GNOME_TEST_SOAK_CURSOR_DIR: `${dir}/cursors`, GNOME_TEST_SOAK_POWEROFF: '0',
             // The probe starts 2 s after the sampler and may end after it: no margin.
             GNOME_TEST_SOAK_GC_INTERVAL: '2', GNOME_TEST_SOAK_PROBE_MARGIN: '0',
         };
@@ -277,13 +282,14 @@ test('a new InvocationID during the probe discards the sample, and the second tr
     assertTrue(overlaps(log)[0].includes('try 1 of 3'), `the try in:\n${log.join('\n')}`);
 });
 
-test('an active updater run at the end of the probe discards the sample', () => {
-    // The run is active from the 3rd Eval and ends at the first Eval of the second try.
+test('an updater run that is active at the end or at the start of a try discards the sample', () => {
+    // The run is active from the 3rd Eval and ends at the first Eval of the second try. So
+    // the run is active at the end of try 1 and at the start of try 2, and try 3 is the sample.
     const {output, gc, calls, log} = probeWith({activate: [3], idle: [7]});
     assertEqual(gc.length, 1, `lines of gc.tsv; output:\n${output}`);
     assertEqual(gc[0][3], 'true,true,true', 'collected');
-    assertEqual(calls, 12, 'Evals: two tries');
-    assertEqual(overlaps(log).length, 1, `sampler.log:\n${log.join('\n')}`);
+    assertEqual(calls, 18, 'Evals: three tries');
+    assertEqual(overlaps(log).length, 2, `sampler.log:\n${log.join('\n')}`);
 });
 
 test('three overlaps give a line with "updater overlap" in place of the collections', () => {
@@ -292,6 +298,14 @@ test('three overlaps give a line with "updater overlap" in place of the collecti
     assertEqual(gc[0][3], 'updater overlap', 'collected');
     assertEqual(calls, 18, 'Evals: three tries');
     assertEqual(overlaps(log).length, 3, `sampler.log:\n${log.join('\n')}`);
+});
+
+test('a shell restart and three overlaps give both reasons in "collected"', () => {
+    // The fake gnome-shell service stops in the last try.
+    const {output, gc, calls} = probeWith({bump: [3, 9, 15], restart: [16]});
+    assertEqual(gc.length, 1, `lines of gc.tsv; output:\n${output}`);
+    assertEqual(gc[0][3], 'shell restarted,updater overlap', 'collected');
+    assertEqual(calls, 18, 'Evals: three tries');
 });
 
 test('the control container, with no updater service, makes one try', () => {

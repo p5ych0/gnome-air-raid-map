@@ -261,8 +261,8 @@ function dataChecks(role, expect) {
     for (const [g, problem] of bad)
         print(`  ${role.name}: probe at ${hms(g.elapsed_s)}: ${problem}`);
     verdict(role.gc.length >= 1 && bad.length === 0,
-        `data: ${role.name}: every GC probe has ${GC_PASSES} proven GC passes and a good malloc_trim ` +
-        `(${role.gc.length - bad.length} of ${role.gc.length})`);
+        `data: ${role.name}: every GC probe has ${GC_PASSES} proven GC passes, a good malloc_trim ` +
+        `and no updater overlap (${role.gc.length - bad.length} of ${role.gc.length})`);
 }
 
 // The runs of one updater role (spec 7.4, check 4, and goal 6).

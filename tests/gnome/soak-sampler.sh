@@ -24,7 +24,8 @@
 #                picture buffers in gnome-shell, and one garbage collection does not
 #                free all dead pictures. So the probe:
 #                1. In an updater container, waits until a run of the updater ends (60 s
-#                   at most), and then 5 s more: no picture change falls in the probe.
+#                   at most), and then 5 s more. The next run then usually starts after
+#                   the probe (see the overlap check below).
 #                2. Takes the sample "before".
 #                3. Makes 3 proven garbage collections in gnome-shell, through
 #                   org.gnome.Shell.Eval (the Shell runs with --unsafe-mode), 2 s apart.
@@ -39,15 +40,17 @@
 #                5. Waits 5 s and takes the sample "trim": the live memory.
 #                The timer keeps its cadence, so a run can start during the probe, and a
 #                picture change then leaves dead buffers in the samples. So the probe
-#                reads the InvocationID of the updater service before the first sample
-#                and after the last one, and reads its ActiveState after the last one. If
-#                the ID changed or a run is active, a run overlapped the probe. The
-#                sampler then discards the probe (sampler.log has a line) and starts it
-#                again (steps 1 to 5), 3 tries at most. Three overlaps give a line with
-#                "updater overlap" in "collected", and summarize.js fails that probe.
-#                The control container has no updater and no check.
+#                reads the InvocationID and the ActiveState of the updater service before
+#                the first sample and after the last one. A run overlapped the probe if
+#                the ActiveState is not inactive or failed at the start or at the end, or
+#                if the ID changed. The sampler then discards the probe (sampler.log has
+#                a line) and starts it again (steps 1 to 5), 3 tries at most. Three
+#                overlaps give a line with "updater overlap" in "collected", and
+#                summarize.js fails that probe. The control container has no updater and
+#                no check.
 #                One line: the start time, gnome-shell PID, "collected" (the result of
-#                each collection: true, false or error; or "shell restarted"),
+#                each collection: true, false or error; or "shell restarted", "updater
+#                overlap", or both),
 #                gc_passes (the number of proven collections), trim (ok or fail) and
 #                trim_detail (the return value of malloc_trim, or the reason of the
 #                failure), PSS, anonymous PSS, shmem PSS and RSS of the four samples,
@@ -60,6 +63,8 @@
 # and journal.txt stay empty, and both containers have the same sampler load.
 set -u
 OUT=${GNOME_TEST_SOAK_OUT:-/out}
+# The folder of the journal cursors (a test gives a folder of its own).
+CURSOR_DIR=${GNOME_TEST_SOAK_CURSOR_DIR:-/var/tmp}
 seconds=$1
 TEST_USER=tester
 TEST_UID=$(id -u "$TEST_USER")
@@ -79,7 +84,7 @@ user_show() {
 
 # journal_append <file> <unit ...>: appends the new journal lines of the units.
 journal_append() {
-    local file=$1 cursor=/var/tmp/gnome-test-soak-$(basename "$1").cursor
+    local file=$1 cursor=$CURSOR_DIR/gnome-test-soak-$(basename "$1").cursor
     shift
     as_user_bare journalctl --user --no-pager -q -o short-iso-precise --cursor-file="$cursor" \
         "${@/#/--unit=}" >> "$OUT/$file" 2> /dev/null
@@ -114,8 +119,12 @@ GC_PASSES=3
 PROBE_TRIES=3
 GC_PASS_WAIT=2
 TRIM_WAIT=150
-# A probe ends before the end of the sampler: it starts 300 s before the end at the latest.
-PROBE_MARGIN=${GNOME_TEST_SOAK_PROBE_MARGIN:-300}
+# The last probe starts PROBE_MARGIN s before the end at the latest. A try waits 226 s at
+# most: 60 s for the end of a run, 150 s for the trim, and 16 s more. Its commands add a
+# few seconds when the Shell answers the Evals. So 3 tries take less than 720 s (3 tries
+# of 240 s), and a probe ends before the end of the sampler. A Shell that does not answer
+# adds up to 25 s for each Eval (the D-Bus timeout of gdbus).
+PROBE_MARGIN=${GNOME_TEST_SOAK_PROBE_MARGIN:-720}
 
 # One proven garbage collection in gnome-shell: prints true, false or error.
 gc_pass() {
@@ -159,12 +168,14 @@ trim_request() {
     printf 'fail\tno answer from the host in %s s (tests/leak/soak.sh answers the trim requests)' "$TRIM_WAIT"
 }
 
-# overlapped <id>: succeeds if an updater run overlapped a probe that started with the
-# InvocationID id (empty in the control container, which has no updater): the ID changed,
-# or a run is active.
+# overlapped <id> <state>: succeeds if an updater run overlapped a try of a probe that
+# started with the InvocationID id and the ActiveState state (an empty id: the control
+# container, which has no updater): a run was active at the start, the ID changed, or a
+# run is active now.
 overlapped() {
     local unit=${UNITS[0]} id state
     [ -n "$1" ] || return 1
+    case $2 in inactive | failed) ;; *) return 0 ;; esac
     id=$(user_show -p InvocationID --value "$unit" 2> /dev/null)
     state=$(user_show -p ActiveState --value "$unit" 2> /dev/null)
     [ "$id" = "$1" ] || return 0
@@ -173,12 +184,16 @@ overlapped() {
 
 # One GC probe and its line in gc.tsv. It runs in the background.
 gc_probe() {
-    local pid epoch before gc1 gc3 trim after results passes result i try id0 clean=0
+    local pid epoch before gc1 gc3 trim after results passes result i try id0 state0 key value clean=0 reasons=()
     for ((try = 1; try <= PROBE_TRIES; try++)); do
         results=() passes=0
         wait_run_end
         sleep 5
-        id0=$(user_show -p InvocationID --value "${UNITS[0]}" 2> /dev/null)
+        # The InvocationID and the ActiveState at the start of the try, from one read.
+        id0='' state0=''
+        while IFS='=' read -r key value; do
+            case $key in InvocationID) id0=$value ;; ActiveState) state0=$value ;; esac
+        done < <(user_show -p InvocationID -p ActiveState "${UNITS[0]}" 2> /dev/null)
         pid=$(shell_pid)
         epoch=$(date +%s)
         before=$(memory "$pid")
@@ -193,12 +208,13 @@ gc_probe() {
         trim=$(trim_request "$pid")
         sleep 5
         after=$(memory "$pid")
-        if ! overlapped "$id0"; then clean=1; break; fi
+        if ! overlapped "$id0" "$state0"; then clean=1; break; fi
         echo "$(date -Is) GC probe try $try of $PROBE_TRIES: an updater run overlapped it; the sample is discarded" \
             >> "$OUT/sampler.log"
     done
-    [ "$(shell_pid)" = "$pid" ] || results=("shell restarted")
-    [ $clean -eq 1 ] || results=("updater overlap")
+    [ "$(shell_pid)" = "$pid" ] || reasons+=("shell restarted")
+    [ $clean -eq 1 ] || reasons+=("updater overlap")
+    [ ${#reasons[@]} -eq 0 ] || results=("${reasons[@]}")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$epoch" "$((epoch - start))" "$pid" \
         "$(IFS=,; echo "${results[*]}")" "$passes" "$trim" "$before" "$gc1" "$gc3" "$after" "$(date +%s)" \
         >> "$OUT/gc.tsv"
@@ -266,7 +282,7 @@ printf '# %s\n' "$(printf '%s\t' epoch elapsed_s shell_pid collected gc_passes t
     {pss,anon,shmem,rss}_trim_kb end_epoch)" | sed 's/\t$//' > "$OUT/gc.tsv"
 : > "$OUT/journal.txt"
 : > "$OUT/shell-journal.txt"
-rm -f /var/tmp/gnome-test-soak-*.cursor
+rm -f "$CURSOR_DIR"/gnome-test-soak-*.cursor
 # The runs before the sampler started (the install) are in journal-user-end.txt, not in runs.tsv.
 for unit in "${UNITS[@]}"; do last[$unit]=$(user_show -p InvocationID --value "$unit" 2> /dev/null); done
 echo "$(date -Is) sampler start: $seconds s" >> "$OUT/sampler.log"

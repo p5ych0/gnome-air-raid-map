@@ -139,7 +139,7 @@ of each session makes one probe:
 
 1. In a session with the updater, the probe waits until a run of the
    updater ends (60 s at most), and then 5 s more. A run starts every 30 s
-   and takes about 0.5 s. So no picture change falls inside the probe.
+   and takes about 0.5 s. So the next run usually starts after the probe.
 2. It records the sample "before".
 3. It makes three proven GC passes, 2 s apart. The proof is the WeakRef
    proof of the first soak: an object that only a `WeakRef` holds is gone
@@ -147,6 +147,21 @@ of each session makes one probe:
 4. It asks the host for `malloc_trim(0)` in `gnome-shell`.
 5. It waits 5 s and records the sample "trim". This sample is the live
    memory.
+
+The timer keeps its cadence, so a run can start during the probe. Its
+picture change then puts dead buffers in the samples. So the probe checks
+the updater service:
+
+- It reads the `InvocationID` and the `ActiveState` of the service at the
+  start and at the end.
+- A run overlapped the probe if the `ActiveState` is not `inactive` or
+  `failed` at the start or at the end, or if the `InvocationID` changed.
+- The sampler then discards the sample and makes the probe again (steps 1
+  to 5), 3 tries at most.
+- After 3 overlaps, the probe records "updater overlap". This probe fails
+  the data check.
+- The last probe starts 720 s (3 tries of 240 s) before the end at the
+  latest, so it ends before the sampler ends.
 
 `gc.tsv` records the result of each GC pass, the number of proven passes,
 the trim result, and four samples: before, after the first GC, after the
@@ -184,7 +199,8 @@ third GC, and after the trim. The sampler still records a raw sample every
 control:
 
 1. Use the post-trim anonymous PSS of the good probes after the warm-up. A
-   good probe has three proven GC passes and a trim that ran.
+   good probe has three proven GC passes, a trim that ran, and no updater
+   overlap.
 2. Split the soak into two halves of equal time.
 3. Take the largest value of the second half minus the largest value of
    the first half.
@@ -193,8 +209,9 @@ control:
 
 Other parts of check 5:
 
-- A probe without three proven GC passes or without a good trim fails the
-  data check. The summary lists the reason, and the sample does not count.
+- A probe fails the data check if it has fewer than three proven GC
+  passes, if it has no good trim, or if an updater run overlapped each of
+  its 3 tries. The summary lists the reason, and the sample does not count.
 - The CPU part of check 5 does not change: the updater adds less than 1 %
   of one core to the Shell service with its children.
 - The summary prints the raw trends and the one-GC trends as information.

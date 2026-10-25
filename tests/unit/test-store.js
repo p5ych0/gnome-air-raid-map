@@ -443,7 +443,25 @@ const SHAPE = {
     'a center outside the bounds': entry => {
         entry.numbers[4] = 100;
     },
+    // One ring in a box of 5e-324 by 5e-324, with the bounds of the box and a center in it.
+    // The ring has no |area| > 1e-10, so prepareGeometry never makes it. The map scale of
+    // such bounds is Infinity, and every point on the screen is NaN.
+    'points in a box of width 5e-324': entry => {
+        const ring = [[0, 0], [5e-324, 0], [5e-324, 5e-324], [0, 5e-324], [0, 0]];
+        entry.numbers = [0, 0, 5e-324, 5e-324, 0, 0, ...ring.flat()];
+    },
+    // The center must be the label point that prepareGeometry computes, bit for bit.
+    'a center one ulp from the label point': entry => {
+        entry.numbers[4] = nextUp(entry.numbers[4]);
+    },
 };
+// The next double above a positive x: its bits as an integer, plus one.
+function nextUp(x) {
+    const view = new DataView(new ArrayBuffer(8));
+    view.setFloat64(0, x);
+    view.setBigUint64(0, view.getBigUint64(0) + 1n);
+    return view.getFloat64(0);
+}
 for (const [shape, change] of Object.entries(SHAPE)) {
     test(`a prepared entry with a valid checksum is rebuilt: ${shape}`, () => withFixture(async ({server, dir, session}) => {
         await loadGeometry(session, server.base, dir, 1000000);
@@ -459,6 +477,23 @@ for (const [shape, change] of Object.entries(SHAPE)) {
             prepareGeometry(JSON.parse(collection('rayon', 'r1'))), 'the entry is not rebuilt');
     }));
 }
+
+// prepareGeometry accepts an outer ring that crosses itself. The centroid of such a ring
+// can lie outside its points. The entry must still be used, or each run rebuilds it.
+test('a prepared region with a self-crossing ring and its center outside its points is used', () => {
+    const dir = GLib.dir_make_tmp('air-raid-prepared-XXXXXX');
+    try {
+        const fresh = prepareGeometry({type: 'FeatureCollection', features: [{type: 'Feature',
+            properties: {key: 'bow-tie'}, geometry: {type: 'Polygon',
+                coordinates: [[[29, 49], [31, 51], [31, 49.5], [29, 50.6], [29, 49]]]}}]});
+        const [x, y] = fresh.regions[0].center, b = fresh.bounds;
+        assertTrue(x < b[0] || x > b[2] || y < b[1] || y > b[3], `the center ${x}, ${y} is in the bounds ${b}`);
+        writePrepared(path(dir, 'x.prepared'), fresh, 'v1');
+        assertDeepEqual(readPrepared(path(dir, 'x.prepared'), 'v1'), fresh);
+    } finally {
+        removeTree(dir);
+    }
+});
 
 test('a prepared entry that cannot be written is not an error', () => withFixture(async ({server, dir, session}) => {
     // A folder in place of the file: the entry can be neither read nor written.

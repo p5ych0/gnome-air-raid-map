@@ -166,10 +166,10 @@ test('a failed trim fails the data check, and its sample does not count', () => 
         live: [0, 0, 0, 0, 10, 0, 0],
         probes: {4: {trim: 'fail', trim_detail: 'gdb is not installed on the host'}},
     }});
-    assertEqual(verdictOf(result, 'data: updater: every GC probe has 3 proven GC passes and a good malloc_trim'), 'FAIL');
+    assertEqual(verdictOf(result, 'data: updater: every GC probe has 3 proven GC passes, a good malloc_trim and no updater overlap'), 'FAIL');
     assertTrue(result.lines.some(line => line.includes('2h30m') && line.includes('gdb is not installed on the host')),
         `the reason of the failed probe in:\n${result.output}`);
-    assertEqual(verdictOf(result, 'data: control: every GC probe has 3 proven GC passes and a good malloc_trim'), 'PASS');
+    assertEqual(verdictOf(result, 'data: control: every GC probe has 3 proven GC passes, a good malloc_trim and no updater overlap'), 'PASS');
     assertEqual(verdictOf(result, LIVE), 'PASS');
     assertEqual(result.status, 1, 'exit status');
 });
@@ -180,17 +180,17 @@ test('a probe that an updater run overlapped in 3 tries fails the data check, an
         live: [0, 0, 0, 0, 10, 0, 0],
         probes: {4: {collected: 'updater overlap'}},
     }});
-    assertEqual(verdictOf(result, 'data: updater: every GC probe has 3 proven GC passes and a good malloc_trim'), 'FAIL');
+    assertEqual(verdictOf(result, 'data: updater: every GC probe has 3 proven GC passes, a good malloc_trim and no updater overlap'), 'FAIL');
     assertTrue(result.lines.some(line => line.includes('2h30m') && line.includes('an updater run overlapped each of 3 tries')),
         `the reason of the failed probe in:\n${result.output}`);
-    assertEqual(verdictOf(result, 'data: control: every GC probe has 3 proven GC passes and a good malloc_trim'), 'PASS');
+    assertEqual(verdictOf(result, 'data: control: every GC probe has 3 proven GC passes, a good malloc_trim and no updater overlap'), 'PASS');
     assertEqual(verdictOf(result, LIVE), 'PASS');
     assertEqual(result.status, 1, 'exit status');
 });
 
 test('a probe with fewer than 3 proven GC passes fails the data check', () => {
     const result = soak({updater: {probes: {1: {collected: 'true,false,true', gc_passes: 2}}}});
-    assertEqual(verdictOf(result, 'data: updater: every GC probe has 3 proven GC passes and a good malloc_trim'), 'FAIL');
+    assertEqual(verdictOf(result, 'data: updater: every GC probe has 3 proven GC passes, a good malloc_trim and no updater overlap'), 'FAIL');
     assertTrue(result.lines.some(line => line.includes('1h00m') && line.includes('2 of 3 GC passes proven')),
         `the reason of the failed probe in:\n${result.output}`);
     assertEqual(result.status, 1, 'exit status');
