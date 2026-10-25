@@ -26,7 +26,15 @@ shift 2
 case $image in fedora44 | ubuntu2404) ;; *) usage ;; esac
 [ -f "$here/scenarios/$scenario.sh" ] || { echo "no scenario: $here/scenarios/$scenario.sh" >&2; exit 2; }
 
-name=${GNOME_TEST_OUT_NAME:-$image-$scenario}
+name=${GNOME_TEST_OUT_NAME-$image-$scenario}
+# The name must stay inside tests/gnome/out: rm -rf empties it. An inner slash is allowed
+# (the soak uses soak-<time>/<role>). Not allowed: an empty name, a name that starts or
+# ends with a slash, an empty or "." part, and "..".
+case $name in
+    '' | /* | */ | *//* | *..* | . | ./* | */. | */./*)
+        echo "$0: bad GNOME_TEST_OUT_NAME '$name': use a relative name with no '..', no empty part and no '.' part" >&2
+        exit 2 ;;
+esac
 out="$here/out/$name"
 rm -rf "$out"
 mkdir -p "$out"

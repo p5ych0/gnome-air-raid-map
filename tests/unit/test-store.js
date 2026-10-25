@@ -417,6 +417,17 @@ const SHAPE = {
     'a ring longer than all doubles': entry => {
         entry.header.regions[0].rings[0][0] = 2 ** 31 - 1;
     },
+    // The numbers that prepareGeometry rejects: the first 4 doubles are the bounds, the next
+    // 2 are the center of the region, and the last 2 are the last point of the last ring.
+    'a NaN point': entry => {
+        entry.numbers[entry.numbers.length - 1] = NaN;
+    },
+    'an Infinity center': entry => {
+        entry.numbers[4] = Infinity;
+    },
+    'bounds with no area': entry => {
+        entry.numbers[2] = entry.numbers[0];
+    },
 };
 for (const [shape, change] of Object.entries(SHAPE)) {
     test(`a prepared entry with a valid checksum is rebuilt: ${shape}`, () => withFixture(async ({server, dir, session}) => {

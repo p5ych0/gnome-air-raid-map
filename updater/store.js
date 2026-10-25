@@ -146,6 +146,7 @@ export function readPrepared(path, version, code = codeVersion()) {
                 return null;
             keys['@' + key] = true;
             const center = [numbers[k], numbers[k + 1]];
+            if (!center.every(Number.isFinite)) return null;
             k += 2;
             const polygons = [];
             for (const lengths of rings) {
@@ -154,7 +155,10 @@ export function readPrepared(path, version, code = codeVersion()) {
                 for (const n of lengths) {
                     if (!Number.isInteger(n) || n < 4 || k + 2 * n > numbers.length) return null;
                     const ring = new Array(n);
-                    for (let i = 0; i < n; i++, k += 2) ring[i] = [numbers[k], numbers[k + 1]];
+                    for (let i = 0; i < n; i++, k += 2) {
+                        if (!Number.isFinite(numbers[k]) || !Number.isFinite(numbers[k + 1])) return null;
+                        ring[i] = [numbers[k], numbers[k + 1]];
+                    }
                     polygon.push(ring);
                 }
                 polygons.push(polygon);
@@ -162,7 +166,10 @@ export function readPrepared(path, version, code = codeVersion()) {
             regions.push({key, label, polygons, center});
         }
         if (k !== numbers.length) return null;
-        return {regions, keys, bounds: Array.from(numbers.subarray(0, 4))};
+        const bounds = Array.from(numbers.subarray(0, 4));
+        // The checks of prepareGeometry: finite numbers and a map extent with an area.
+        if (!bounds.every(Number.isFinite) || !(bounds[2] > bounds[0] && bounds[3] > bounds[1])) return null;
+        return {regions, keys, bounds};
     } catch (e) {
         return null;
     }

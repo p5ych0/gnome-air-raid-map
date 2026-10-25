@@ -286,13 +286,15 @@ We measured these values on Fedora 44:
     Shell and its glycin image loaders).
   - The memory of `gnome-shell` rises for about 12 hours and then stops at
     a ceiling. In the last 12 hours, its anonymous memory after one garbage
-    collection stayed between 200 and 240 MB.
+    collection stayed at about 200 to 240 MB.
   - The cause is the C library (glibc). It keeps the freed memory of old
     pictures inside `gnome-shell`, for later use. A call of `malloc_trim(0)`
     gives this memory back to the system.
-  - The live memory of `gnome-shell` does not grow. In a test of 4,176
-    picture changes, the C library gave each freed picture back to the
-    system at once. After three garbage collections, the memory of
+  - The live memory of `gnome-shell` does not grow. A test of 4,176
+    picture changes ran with `MALLOC_MMAP_THRESHOLD_=131072` set in the
+    test Shell. This setting makes glibc give each freed picture back to
+    the system at once. It was a test setting, not a recommendation. After
+    three garbage collections, the memory of
     `gnome-shell` rose by 7.5 MB in the first 418 changes. In the next
     3,758 changes, it rose by 1 MB.
   - The details are in

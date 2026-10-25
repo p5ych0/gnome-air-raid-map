@@ -84,20 +84,31 @@ const NET_URL = GLib.Uri.resolve_relative(import.meta.url, '../../updater/net.js
 const trustStore = () => Gio.TlsBackend.get_default().get_default_database();
 const anchorsOf = db => (db instanceof Gio.TlsFileDatabase ? db.anchors : null);
 
-test('an https session uses the CA file, also for new connections', () => {
+// An https session changes the default trust store of the process. A test that makes one
+// restores the store, so that no test depends on the tests before it.
+function keepingTrustStore(fn) {
+    const saved = trustStore();
+    try {
+        return fn();
+    } finally {
+        Gio.TlsBackend.get_default().set_default_database(saved);
+    }
+}
+
+test('an https session uses the CA file, also for new connections', () => keepingTrustStore(() => {
     const session = createSession({base: 'https://neptun.in.ua', anchors: TEST_CERT});
     assertEqual(anchorsOf(session.get_tls_database()), TEST_CERT);
     // glib-networking reads the default trust store of the process when it creates a connection.
     assertEqual(anchorsOf(trustStore()), TEST_CERT, 'the default trust store of the process');
-});
+}));
 
-test('the CA file is the PEM file of the system CAs', () => {
+test('the CA file is the PEM file of the system CAs', () => keepingTrustStore(() => {
     if (!GLib.file_test(SYSTEM_CA_FILE, GLib.FileTest.EXISTS)) {
         print(`# skip: no ${SYSTEM_CA_FILE}, so no check of the CA file of an https session`);
         return;
     }
     assertEqual(anchorsOf(createSession({base: 'https://neptun.in.ua'}).get_tls_database()), SYSTEM_CA_FILE);
-});
+}));
 
 test('an http session and a session without a usable CA file keep the trust store', () => {
     const dir = GLib.dir_make_tmp('air-raid-ca-XXXXXX');
@@ -105,6 +116,7 @@ test('an http session and a session without a usable CA file keep the trust stor
     try {
         GLib.file_set_contents(empty, '');
         const before = trustStore();
+        assertEqual(anchorsOf(before), null, 'an earlier test left a CA file as the default trust store');
         for (const [base, anchors] of [['http://127.0.0.1:1', TEST_CERT],
             ['https://neptun.in.ua', GLib.build_filenamev([dir, 'missing.pem'])], ['https://neptun.in.ua', empty]]) {
             const session = createSession({base, anchors});

@@ -333,6 +333,10 @@ export function renderPicture(layout, geometry, view) {
             }
             cr.save();
             cr.setOperator(Cairo.Operator.SOURCE);
+            // The source and the target are the same surface. Cairo does not define
+            // this in general. It is defined here because the copied rectangle and the
+            // target rectangle never overlap (apart). The pixel tests compare each copy
+            // with a monitor drawn alone.
             cr.setSourceSurface(surface, rect.x - copyOf.x, rect.y - copyOf.y);
             cr.rectangle(rect.x, rect.y, rect.width, rect.height);
             cr.fill();
