@@ -157,7 +157,7 @@ test('the watcher calls malloc_trim(0) in gnome-shell for the trim request of a 
 });
 
 // host_pid reads the NSpid line of each status file of the proc folder. A process can exit
-// after the glob and before gawk opens its status file. The fake proc folder has such a
+// after the glob and before cat opens its status file. The fake proc folder has such a
 // file (1/status, a link to nothing) before the status file of gnome-shell. gnome-shell
 // has the container PID 55 and the host PID 8888, in the PID namespace of the container
 // init (host PID 700).
@@ -201,9 +201,9 @@ test('a trim request fails with the reason when gdb is not installed on the host
 // InvocationID of the updater service (bump) or its ActiveState (activate, idle), as a run
 // of the updater does, or it stops the fake gnome-shell service (restart: MainPID 0). The
 // fake systemctl gives the LoadState "loaded" for the updater service when it exists, and
-// "not-found" in the control container. With EMPTY_ID, its first read with LoadState (the
-// start read of the first try) gives no InvocationID, as a read that failed. The fake
-// sleep takes 10 ms, and it answers the trim request of the sampler with TRIM_RESULT, as
+// "not-found" in the control container. With FAILED_READ, its first read with LoadState
+// (the start read of the first try) fails: it prints no line, as systemctl does when the
+// bus or the user manager does not answer. The fake sleep takes 10 ms, and it answers the trim request of the sampler with TRIM_RESULT, as
 // tests/leak/soak.sh does.
 const SAMPLER = GLib.filename_from_uri(
     GLib.Uri.resolve_relative(import.meta.url, '../gnome/soak-sampler.sh', GLib.UriFlags.NONE))[0];
@@ -230,12 +230,15 @@ const FAKES = {
             esac
             shift
         done
+        if [ -n "$FAILED_READ" ] && [[ " \${props[*]} " == *" LoadState "* ]] &&
+            mkdir "$STATE/failed-read" 2> /dev/null; then
+            echo 'Failed to connect to bus: Connection refused' >&2
+            exit 1
+        fi
         for prop in "\${props[@]}"; do
             case $unit:$prop in
                 gnome-test-shell.service:MainPID) v=$(cat "$STATE/pid" 2> /dev/null || echo "$FAKE_SHELL_PID") ;;
-                gnome-air-raid-map.service:InvocationID) v=$(cat "$STATE/id" 2> /dev/null)
-                    if [ -n "$EMPTY_ID" ] && [[ " \${props[*]} " == *" LoadState "* ]] &&
-                        mkdir "$STATE/empty-id" 2> /dev/null; then v=; fi ;;
+                gnome-air-raid-map.service:InvocationID) v=$(cat "$STATE/id" 2> /dev/null) ;;
                 gnome-air-raid-map.service:ActiveState) v=$(cat "$STATE/active" 2> /dev/null) ;;
                 gnome-air-raid-map.service:LoadState) if [ -e "$STATE/id" ]; then v=loaded; else v=not-found; fi ;;
                 *) v= ;;
@@ -253,10 +256,10 @@ const FAKES = {
 
 // Runs one GC probe of the sampler. updater: the updater service exists (the control
 // container has none). bump, activate, idle, restart: the calls of the fake gdbus that
-// change the services. emptyId: the first start read gives no InvocationID. trim: the
+// change the services. failedRead: the first start read fails. trim: the
 // answer to the trim request. Returns the lines of gc.tsv (without the header), the number
 // of gdbus calls and the lines of sampler.log.
-function probeWith({updater = true, bump = [], activate = [], idle = [], restart = [], emptyId = false,
+function probeWith({updater = true, bump = [], activate = [], idle = [], restart = [], failedRead = false,
     trim = 'ok\tmalloc_trim returned 1'} = {}) {
     const dir = GLib.dir_make_tmp('air-raid-sampler-XXXXXX');
     const shell = new Gio.Subprocess({argv: [REAL_SLEEP, '60'], flags: Gio.SubprocessFlags.NONE});
@@ -277,7 +280,7 @@ function probeWith({updater = true, bump = [], activate = [], idle = [], restart
         const env = {
             PATH: `${dir}/bin:${GLib.getenv('PATH')}`, OUT: `${dir}/out`, STATE: `${dir}/state`,
             FAKE_SHELL_PID: shell.get_identifier(), BUMP: bump.join(' '), ACTIVATE: activate.join(' '),
-            IDLE: idle.join(' '), RESTART: restart.join(' '), EMPTY_ID: emptyId ? '1' : '', TRIM_RESULT: trim,
+            IDLE: idle.join(' '), RESTART: restart.join(' '), FAILED_READ: failedRead ? '1' : '', TRIM_RESULT: trim,
             GNOME_TEST_SOAK_OUT: `${dir}/out`,
             GNOME_TEST_SOAK_CURSOR_DIR: `${dir}/cursors`, GNOME_TEST_SOAK_POWEROFF: '0',
             // The probe starts 2 s after the sampler and may end after it: no margin.
@@ -317,7 +320,7 @@ test('a new InvocationID during the probe discards the sample, and the second tr
     assertEqual(gc[0].slice(3, 6).join(' '), 'true,true,true 3 ok', 'collected, passes, trim');
     assertEqual(calls, 12, 'Evals: two tries');
     assertEqual(overlaps(log).length, 1, `sampler.log:\n${log.join('\n')}`);
-    assertTrue(overlaps(log)[0].includes('try 1 of 3'), `the try in:\n${log.join('\n')}`);
+    assertTrue(/ try 1 of 3 took \d+ s: /.test(overlaps(log)[0]), `the try and its duration in:\n${log.join('\n')}`);
 });
 
 test('an updater run that is active at the end or at the start of a try discards the sample', () => {
@@ -346,13 +349,13 @@ test('a shell restart and three overlaps give both reasons in "collected"', () =
     assertEqual(calls, 18, 'Evals: three tries');
 });
 
-test('a start read with no InvocationID for a loaded updater service discards the sample', () => {
-    const {output, gc, calls, log} = probeWith({emptyId: true});
+test('a start read that fails discards the sample', () => {
+    const {output, gc, calls, log} = probeWith({failedRead: true});
     assertEqual(gc.length, 1, `lines of gc.tsv; output:\n${output}`);
     assertEqual(gc[0][3], 'true,true,true', 'collected');
     assertEqual(calls, 12, 'Evals: two tries');
     assertEqual(overlaps(log).length, 1, `sampler.log:\n${log.join('\n')}`);
-    assertTrue(overlaps(log)[0].includes('try 1 of 3'), `the try in:\n${log.join('\n')}`);
+    assertTrue(/ try 1 of 3 took \d+ s: /.test(overlaps(log)[0]), `the try and its duration in:\n${log.join('\n')}`);
 });
 
 // A failed trim fails the probe anyway. Another try would only hide the reason.

@@ -43,15 +43,17 @@
 #                reads the InvocationID and the ActiveState of the updater service before
 #                the first sample and after the last one. A run overlapped the probe if
 #                the ActiveState is not inactive or failed at the start or at the end, or
-#                if the ID changed. A loaded service with no InvocationID at the start (a
-#                read that failed) also counts as an overlap. The sampler then discards
-#                the probe (sampler.log has a line) and starts it again (steps 1 to 5), 3
-#                tries at most. Three overlaps give a line with "updater overlap" in
+#                if the ID changed. A start read with no InvocationID also counts as an
+#                overlap, unless it gives the LoadState not-found (the control
+#                container). A read that fails gives no line at all. The sampler then
+#                discards the probe (sampler.log has a line with the duration of the
+#                try) and starts it again (steps 1 to 5), 3 tries at most. Three
+#                overlaps give a line with "updater overlap" in
 #                "collected", and summarize.js fails that probe. A failed trim also fails
 #                the probe, so the sampler keeps a try with a failed trim and does not
 #                try again: the line then gives the reason of the trim failure. The
-#                control container has no updater (its service is not loaded) and no
-#                check.
+#                control container has no updater (the LoadState of its service is
+#                not-found) and no check.
 #                One line: the start time, gnome-shell PID, "collected" (the result of
 #                each collection: true, false or error; or "shell restarted", "updater
 #                overlap", or both),
@@ -175,13 +177,14 @@ trim_request() {
 
 # overlapped <id> <state> <load>: succeeds if an updater run overlapped a try of a probe
 # that started with the InvocationID id, the ActiveState state and the LoadState load: a
-# run was active at the start, the ID changed, or a run is active now. An empty id with
-# the load "loaded" is a start read that failed: that try counts as overlapped. An empty
-# id of a service that is not loaded is the control container, which has no updater.
+# run was active at the start, the ID changed, or a run is active now. An empty id counts
+# as overlapped, unless the load is "not-found": that is the control container, which has
+# no updater. A start read that fails (a bus error, or a user manager that does not
+# answer) gives no line, so the id, the state and the load are all empty.
 overlapped() {
     local unit=${UNITS[0]} id state
     if [ -z "$1" ]; then
-        [ "$3" = loaded ]
+        [ "$3" != not-found ]
         return
     fi
     case $2 in inactive | failed) ;; *) return 0 ;; esac
@@ -193,9 +196,9 @@ overlapped() {
 
 # One GC probe and its line in gc.tsv. It runs in the background.
 gc_probe() {
-    local pid epoch before gc1 gc3 trim after results passes result i try id0 state0 load0 key value kept=0 reasons=()
+    local pid epoch before gc1 gc3 trim after results passes result i try t0 id0 state0 load0 key value kept=0 reasons=()
     for ((try = 1; try <= PROBE_TRIES; try++)); do
-        results=() passes=0
+        results=() passes=0 t0=$(date +%s)
         wait_run_end
         sleep 5
         # The InvocationID, the ActiveState and the LoadState at the start of the try, from
@@ -221,8 +224,8 @@ gc_probe() {
         # The line keeps this try (kept=1) if no run overlapped it, or if its trim failed:
         # a failed trim fails the probe anyway, and another try would only hide the reason.
         if [ "${trim%%$'\t'*}" != ok ] || ! overlapped "$id0" "$state0" "$load0"; then kept=1; break; fi
-        echo "$(date -Is) GC probe try $try of $PROBE_TRIES: an updater run overlapped it; the sample is discarded" \
-            >> "$OUT/sampler.log"
+        echo "$(date -Is) GC probe try $try of $PROBE_TRIES took $(($(date +%s) - t0)) s: an updater run" \
+            "overlapped it; the sample is discarded" >> "$OUT/sampler.log"
     done
     [ "$(shell_pid)" = "$pid" ] || reasons+=("shell restarted")
     [ $kept -eq 1 ] || reasons+=("updater overlap")

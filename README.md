@@ -272,8 +272,8 @@ plain background at each side of the banner. The text stays fully visible.
 
 We measured these values on Fedora 44:
 
-- One run at 1920×1080 uses about 0.22 to 0.24 s of CPU time and 72 to 79 MB
-  of peak memory.
+- One run at 1920×1080 uses a median of 0.21 s of CPU time (max 0.31 s in
+  1,000 runs) and 71 to 75 MB of peak memory.
 - With the real timer against NEPTUN, at 1920×1080, the average was 0.68 %
   of one CPU core (two 35-minute measurements). That build kept a prepared
   copy of the boundary files. The current build does not, so we estimate

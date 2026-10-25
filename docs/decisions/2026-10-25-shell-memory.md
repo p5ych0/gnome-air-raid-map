@@ -156,10 +156,15 @@ the updater service:
   start and at the end.
 - A run overlapped the probe if the `ActiveState` is not `inactive` or
   `failed` at the start or at the end, or if the `InvocationID` changed.
-  A loaded service with no `InvocationID` at the start is a read that
-  failed. This also counts as an overlap.
+  A start read with no `InvocationID` also counts as an overlap, unless
+  its `LoadState` is `not-found`. The control container gives
+  `not-found`. A read that fails (a bus error, or a user manager that does
+  not answer) gives no line at all, so it counts as an overlap.
 - The sampler then discards the sample and makes the probe again (steps 1
-  to 5), 3 tries at most.
+  to 5), 3 tries at most. `sampler.log` gives the duration of each
+  discarded try. The before and one-GC samples of a retried try follow
+  the trim of the earlier try, so the one-GC trend, which is not judged,
+  mixes trimmed and untrimmed probes.
 - After 3 overlaps, the probe records "updater overlap". This probe fails
   the data check.
 - A probe with a failed trim fails the data check anyway. So the sampler
