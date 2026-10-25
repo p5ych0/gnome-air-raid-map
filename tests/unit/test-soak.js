@@ -14,8 +14,16 @@ const SOAK = GLib.filename_from_uri(
 const LIMIT_S = 20;
 
 const PODMAN = `#!/bin/bash
+# The containers that a fake launcher created are the lines of "created" in the folder of
+# the soak.sh copy. "ps --filter name=<regex>" lists the matching ones, and "rm" adds the
+# names to "removed".
+here=$(cd "$(dirname "$0")/.." && pwd)
 case $1 in
-    ps | rm) ;;
+    ps) while [ $# -gt 0 ]; do
+            case $1 in name=*) grep -e "\${1#name=}" "$here/created" 2> /dev/null ;; esac
+            shift
+        done; true ;;
+    rm) shift; for name in "$@"; do [[ $name == -* || $name =~ ^[0-9]+$ ]] || echo "$name" >> "$here/removed"; done ;;
     build) cat > /dev/null ;;
     container) [ "$2" = exists ] && [ -d "$3" ] ;;
     # The PID of the first process of a container: the fake gnome-shell of its sampler.
@@ -55,6 +63,7 @@ const HEADER = ['epoch', 'elapsed_s', 'shell_pid', 'shell_pss_kb', 'shell_pss_an
 // its container PID is its host PID. pids: the host PID of the container init and the
 // container PID of gnome-shell in the request, for a fake proc folder.
 function sampler({age, ended = false, stopAfter = null, trim = false, pids = null}) {
+    // age null: the sampler writes the header, but no data row.
     return `#!/bin/bash
 out=$1
 ${trim ? `sleep 10 < /dev/null > /dev/null 2>&1 &
@@ -62,8 +71,8 @@ shell=$!
 echo "${pids ? pids.init : '$shell'}" > "$out/init-pid"
 printf '17\\t%s\\n' "${pids ? pids.shell : '$shell'}" > "$out/trim-request"` : ''}
 printf '# %s\\n' '${HEADER}' > "$out/samples.tsv"
-printf '%s\\t0\\t4242\\t1000\\t500\\t10\\t2000\\t1.00\\t1500\\t3000000\\t1000000\\t0\\t0\\t\\n' \\
-    $(($(date +%s) - ${age})) >> "$out/samples.tsv"
+${age === null ? '' : `printf '%s\\t0\\t4242\\t1000\\t500\\t10\\t2000\\t1.00\\t1500\\t3000000\\t1000000\\t0\\t0\\t\\n' \\
+    $(($(date +%s) - ${age})) >> "$out/samples.tsv"`}
 echo "sampler start" > "$out/sampler.log"
 ${ended ? 'echo "sampler end" >> "$out/sampler.log"' : ''}
 ${stopAfter === null ? '' : `(sleep ${stopAfter}; echo "sampler end" >> "$out/sampler.log"; touch "$out/stopped"
@@ -135,6 +144,69 @@ test('the watcher accepts a new sample, and an old sample after the sampler ende
     assertEqual(fails(lines).length, 0, `FAIL lines:\n${output}`);
     assertTrue(lines.some(line => / done; evaluate with: /.test(line)), `no done line:\n${output}`);
     assertEqual(status, 0, 'exit status');
+});
+
+test('the watcher reports a sampler that wrote no sample since the start', () => {
+    // The container of the control role runs, but its sampler wrote only the header. The age
+    // counts from the time the watcher registered the container.
+    const {status, output, lines} = soakWith({
+        updater: {age: 0, stopAfter: 3}, 'updater-unchanged': {age: 0, stopAfter: 3}, control: {age: null},
+    }, {GNOME_TEST_SOAK_MAX_SAMPLE_AGE: '2'});
+    const stopped = lines.filter(line => / FAIL: control: the sampler stopped \(no sample since the start, \d+ s ago, more than 2 s\)/.test(line));
+    assertEqual(stopped.length, 1, `FAIL lines for the control sampler in:\n${output}`);
+    assertTrue(!lines.some(line => / FAIL: updater(-unchanged)?: /.test(line)), `a FAIL line for a sampler that runs:\n${output}`);
+    assertEqual(status, 1, 'exit status');
+});
+
+// A fake launcher that is still starting when soak.sh gets SIGTERM. Like run-systemd.sh, it
+// names its container gnome-air-raid-map-<name with / as ->-<PID>. On SIGTERM it creates its
+// container (podman run -d was in progress) before it ends, and it never writes the file
+// "container", so soak.sh has no name to remove. The fake podman records the created and the
+// removed names.
+const SLOW_RUN_SYSTEMD = `#!/bin/bash
+here=$(cd "$(dirname "$0")" && pwd)
+out=$here/out/$GNOME_TEST_OUT_NAME
+mkdir -p "$out"
+trap 'echo "gnome-air-raid-map-\${GNOME_TEST_OUT_NAME//\//-}-$$" >> "$here/../../created"; exit 143' TERM
+touch "$out/starting"
+sleep 30 &
+wait $!
+`;
+
+test('SIGTERM during the start removes the containers that the launchers create, also unregistered ones', () => {
+    const dir = GLib.dir_make_tmp('air-raid-soak-XXXXXX');
+    try {
+        write(`${dir}/tests/leak/soak.sh`, GLib.file_get_contents(SOAK)[1]);
+        write(`${dir}/tests/gnome/Containerfile.fedora44-systemd`, '');
+        write(`${dir}/tests/gnome/run-systemd.sh`, SLOW_RUN_SYSTEMD, 0o755);
+        write(`${dir}/bin/podman`, PODMAN, 0o755);
+        const launcher = new Gio.SubprocessLauncher({
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE,
+        });
+        launcher.setenv('PATH', `${dir}/bin:${GLib.getenv('PATH')}`, true);
+        // Wait until all 3 launchers run, send SIGTERM to soak.sh, and wait for it.
+        const script = `bash "${dir}/tests/leak/soak.sh" 5 & soak=$!
+for ((i = 0; i < 100; i++)); do
+    [ "$(find "${dir}/tests/gnome/out" -name starting 2> /dev/null | wc -l)" -ge 3 ] && break
+    sleep 0.1
+done
+kill -TERM $soak
+wait $soak`;
+        const process = launcher.spawnv(['timeout', `${LIMIT_S}`, 'bash', '-c', script]);
+        const [, output] = process.communicate_utf8(null, null);
+        const read = path => (GLib.file_test(path, GLib.FileTest.EXISTS)
+            ? new TextDecoder().decode(GLib.file_get_contents(path)[1]) : '');
+        const names = text => text.split('\n').filter(line => line).sort();
+        const created = names(read(`${dir}/created`));
+        const removed = names(read(`${dir}/removed`));
+        assertEqual(created.length, 3, `containers that the launchers created; output:\n${output}`);
+        assertTrue(created.every(name => /^gnome-air-raid-map-soak-\d{8}-\d{6}-(updater|updater-unchanged|control)-\d+$/.test(name)),
+            `names of the created containers: ${created}`);
+        assertEqual(removed.join(' '), created.join(' '), `removed containers; output:\n${output}`);
+        assertEqual(process.get_exit_status(), 143, 'exit status of soak.sh');
+    } finally {
+        removeTree(dir);
+    }
 });
 
 // The sampler runs in the container, and the image has no gdb. So soak.sh answers the trim

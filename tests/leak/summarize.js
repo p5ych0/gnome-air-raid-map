@@ -138,6 +138,9 @@ const MAX_SAMPLE_GAP_S = 150;   // samples every 60 s
 const MAX_RUN_GAP_S = 90;       // a run every 30 s
 const MIN_RUN_SHARE = 0.9;      // of the runs that 30 s steps allow
 const EXPECT_SLACK_S = 90;      // the last sample can be up to one step early
+const DEFAULT_GC_INTERVAL_S = 3600;  // GNOME_TEST_SOAK_GC_INTERVAL of an older soak-info.txt
+const PROBE_RETRY_S = 3 * 240;  // 3 tries of up to 240 s (soak-sampler.sh): a probe can be this late
+const PROBE_END_MARGIN_S = 720; // the sampler starts no probe in the last 720 s (PROBE_MARGIN)
 
 // Check 5 (docs/decisions/2026-10-25-shell-memory.md).
 const DECISION = 'docs/decisions/2026-10-25-shell-memory.md';
@@ -178,7 +181,12 @@ function loadRole(dir, name) {
         // An older soak has no soak-info.txt.
     }
     const label = /^label mode: (.*)$/m.exec(info);
-    return {name, dir, all, gc, runs, label: label ? label[1] : null, samples: all};
+    // The first line of soak-info.txt: "role <role>, <n> s, GC probe every <n> s, start ...".
+    const interval = /GC probe every (\d+) s/.exec(info);
+    return {
+        name, dir, all, gc, runs, label: label ? label[1] : null, samples: all,
+        gcInterval: interval ? Number(interval[1]) : DEFAULT_GC_INTERVAL_S,
+    };
 }
 
 // The largest live value in each half of the soak (the halves split at mid), and the rise
@@ -246,6 +254,22 @@ function shellSummary(role, warmup) {
     return result;
 }
 
+// Why the probes (their start times, in seconds from the start of the sampler) do not cover
+// a soak of that duration, or null. A probe is due every interval; a retried probe is late.
+function coverageProblem(times, interval, duration) {
+    const points = [0, ...times, duration];
+    for (let i = 1; i < points.length; i++) {
+        const last = i === points.length - 1;
+        const limit = interval + (last ? PROBE_END_MARGIN_S : PROBE_RETRY_S);
+        if (points[i] - points[i - 1] <= limit) continue;
+        const from = i === 1 ? 'the start' : `the probe at ${hms(points[i - 1])}`;
+        const to = last ? 'the end' : `the probe at ${hms(points[i])}`;
+        return `no probe between ${from} and ${to} (${hms(points[i] - points[i - 1])}; ` +
+            `at most ${hms(limit)} with the interval of ${interval} s)`;
+    }
+    return null;
+}
+
 // The data checks of one container (fix round 1, finding 1): the sample gaps and the duration.
 function dataChecks(role, expect) {
     const times = role.all.map(s => s.epoch);
@@ -263,6 +287,12 @@ function dataChecks(role, expect) {
     verdict(role.gc.length >= 1 && bad.length === 0,
         `data: ${role.name}: every GC probe has ${GC_PASSES} proven GC passes, a good malloc_trim ` +
         `and no updater overlap (${role.gc.length - bad.length} of ${role.gc.length})`);
+    // Raw memory growth is not judged, so the live memory check needs probes all over the soak.
+    const covered = coverageProblem(role.gc.map(g => g.elapsed_s).sort((a, b) => a - b), role.gcInterval,
+        expect ?? duration);
+    if (covered !== null) print(`  ${role.name}: ${covered}`);
+    verdict(covered === null,
+        `data: ${role.name}: the GC probes cover the soak (one every ${role.gcInterval} s, ${role.gc.length} probes)`);
 }
 
 // The runs of one updater role (spec 7.4, check 4, and goal 6).

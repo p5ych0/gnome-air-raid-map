@@ -67,7 +67,10 @@ const UNIT = 8100;
 
 // A soak folder with a control and an updater role over 4 hours: a sample every 60 s, a GC
 // probe every 30 minutes (7 probes: 3 in the first half, 4 in the second), and an updater
-// run every 30 s, all with flat memory. Options of each role:
+// run every 30 s, all with flat memory. Options of the soak: hours (the duration), and
+// probeTimes (the start times of the probes in seconds, instead of one every 30 minutes),
+// with probeInterval (the interval in soak-info.txt; none: the file is missing). Options of
+// each role:
 // shellCpu and groupCpu: the CPU use of gnome-shell and of all processes of its service
 // (the Shell and its children), as a share of one core.
 // raw: KB added to the raw samples and to the pre-trim samples of the probes, a function of
@@ -75,8 +78,8 @@ const UNIT = 8100;
 // live: the post-trim anonymous PSS of each probe above its base, in units (an array of 7).
 // probes: fields that replace the values of a good probe, by probe index.
 // peakGrowth: the growth of MemoryPeak from the first to the last run, as a share.
-function soakFiles({control = {}, updater = {}, peakGrowth = 0.005} = {}) {
-    const start = 1793000000, seconds = 4 * 3600, first = 15, last = seconds - 15, peak = 36 * 1048576;
+function soakFiles({control = {}, updater = {}, peakGrowth = 0.005, hours = 4, probeTimes = null, probeInterval = null} = {}) {
+    const start = 1793000000, seconds = hours * 3600, first = 15, last = seconds - 15, peak = 36 * 1048576;
     const files = {};
     const roles = {
         control: {shellCpu: 0.02, groupCpu: 0.025, ...control},
@@ -90,7 +93,8 @@ function soakFiles({control = {}, updater = {}, peakGrowth = 0.005} = {}) {
                 (options.shellCpu * t).toFixed(2), 250000 + raw(t), 400000000, Math.round(options.groupCpu * t * 1e6),
                 0, 0, '']);
         }
-        for (let t = 1800, i = 0; t < seconds; t += 1800, i++) {
+        const times = probeTimes ?? Array.from({length: seconds / 1800 - 1}, (_, i) => 1800 * (i + 1));
+        for (const [i, t] of times.entries()) {
             const probe = {collected: 'true,true,true', gc_passes: 3, trim: 'ok', trim_detail: 'malloc_trim returned 1',
                 ...replaced[i]};
             const anon = 80000 + (live[i] ?? 0) * UNIT;
@@ -108,11 +112,13 @@ function soakFiles({control = {}, updater = {}, peakGrowth = 0.005} = {}) {
         files[`${role}/gc.tsv`] = tsv(GC_COLUMNS, probes);
         files[`${role}/runs.tsv`] = tsv(RUN_COLUMNS, runs);
         files[`${role}/journal.txt`] = '';
+        if (probeInterval !== null)
+            files[`${role}/soak-info.txt`] = `role ${role}, ${seconds} s, GC probe every ${probeInterval} s, start 2026-10-25T00:00:00+00:00\n`;
     }
     return files;
 }
 
-const soak = options => summarize(soakFiles(options), ['--soak', '@']);
+const soak = (options, args = []) => summarize(soakFiles(options), ['--soak', ...args, '@']);
 
 test('a soak with flat memory and little CPU use passes every check', () => {
     const result = soak();
@@ -207,6 +213,49 @@ test('the raw and the one-GC trends are printed, but not judged', () => {
     assertTrue(result.lines.some(line => line.includes('not judged') && line.includes('allocator retention') &&
         line.includes('docs/decisions/2026-10-25-shell-memory.md')), `the reason line in:\n${result.output}`);
     assertEqual(result.status, 0, 'exit status');
+});
+
+// Check 5 needs probes all over the soak: raw memory growth is not judged, so a soak with
+// probes only at the start would pass the live memory check with no data for the rest.
+const COVER = 'data: updater: the GC probes cover the soak';
+const hourly = (from, to) => Array.from({length: to - from + 1}, (_, i) => (from + i) * 3600);
+
+test('probes only at hours 3 and 13 of a 24-hour soak fail the coverage check', () => {
+    const result = soak({hours: 24, probeTimes: [3 * 3600, 13 * 3600]}, ['--expect', '86400']);
+    assertEqual(verdictOf(result, COVER), 'FAIL');
+    assertTrue(result.lines.some(line => line.includes('no probe between the start and the probe at 3h00m')),
+        `the reason in:\n${result.output}`);
+    assertEqual(result.status, 1, 'exit status');
+});
+
+test('probes that stop before the end fail the coverage check, with the reason', () => {
+    const result = soak({hours: 24, probeTimes: hourly(1, 12)}, ['--expect', '86400']);
+    assertEqual(verdictOf(result, COVER), 'FAIL');
+    assertTrue(result.lines.some(line => line.includes('no probe between the probe at 12h00m and the end')),
+        `the reason in:\n${result.output}`);
+});
+
+test('23 probes on time pass the coverage check', () => {
+    const result = soak({hours: 24, probeTimes: hourly(1, 23)}, ['--expect', '86400']);
+    assertEqual(verdictOf(result, COVER), 'PASS');
+    assertEqual(result.lines.filter(line => line.startsWith('FAIL')).length, 0, `FAIL lines in:\n${result.output}`);
+    assertEqual(result.status, 0, 'exit status');
+});
+
+test('a retried probe that is late (11 minutes, within 3 tries of 240 s) passes the coverage check', () => {
+    // The first try of the probe at hour 10 lost two tries: it starts 700 s after its time.
+    const times = hourly(1, 23).map(t => (t === 10 * 3600 ? t + 700 : t));
+    const result = soak({hours: 24, probeTimes: times}, ['--expect', '86400']);
+    assertEqual(verdictOf(result, COVER), 'PASS');
+    assertEqual(result.status, 0, 'exit status');
+});
+
+test('the probe interval comes from soak-info.txt, and is 3600 s without it', () => {
+    // The default probes of a 4-hour soak are 30 minutes apart.
+    const short = soak({probeInterval: 600});
+    assertEqual(verdictOf(short, COVER), 'FAIL');
+    assertTrue(short.lines.some(line => line.includes('with the interval of 600 s')), `the interval in:\n${short.output}`);
+    assertEqual(verdictOf(soak(), COVER), 'PASS');
 });
 
 await run();

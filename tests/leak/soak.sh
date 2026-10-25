@@ -39,9 +39,13 @@
 # early, gnome-shell is gone, or the last sample of a running sampler is older than
 # 150 s (the script then removes all containers and exits 1), and
 # "soak: ... NOTE: ..." for each updater run that did not succeed; "soak: ... done"
-# at the end. If the script stops early (a signal, an error), it writes "FAIL:
-# soak.sh stopped" and the file <folder>/aborted, and removes the containers. After
-# a SIGKILL, it cannot: the containers then still stop themselves after <seconds>.
+# at the end. A sampler that wrote no sample at all is the same failure: the age
+# counts from the time the script registered the container of the role. If the script
+# stops early (a signal, an error), it writes "FAIL: soak.sh stopped" and the file
+# <folder>/aborted, stops the launchers that still run, and removes every container
+# whose name starts with the prefix of this soak (also a container that no launcher
+# reported yet). After a SIGKILL, it cannot: the containers then still stop
+# themselves after <seconds>.
 # Exit status 0 if all containers ran for the whole time.
 set -u -o pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,8 +56,8 @@ UPDATER_ROLES=(updater updater-unchanged)
 CHECKPOINT=${GNOME_TEST_SOAK_CHECKPOINT:-600}
 POLL=${GNOME_TEST_SOAK_POLL:-30}
 # The sampler writes a sample every 60 s. summarize.js fails a gap above 150 s
-# (MAX_SAMPLE_GAP_S), so the watcher reports it at once.
-MAX_SAMPLE_AGE=150
+# (MAX_SAMPLE_GAP_S), so the watcher reports it at once. A test gives a shorter time.
+MAX_SAMPLE_AGE=${GNOME_TEST_SOAK_MAX_SAMPLE_AGE:-150}
 PREFIX=gnome-air-raid-map-soak-
 GDB=${GNOME_TEST_SOAK_GDB:-gdb}
 # The proc folder that host_pid reads (a test gives a fake one). gdb always uses /proc.
@@ -85,15 +89,48 @@ out_of() {
     echo "$dir/$1"
 }
 
-declare -A container=() pid=()
+declare -A container=() pid=() registered=()
 finished=0 trim_pid=
-# One podman rm for all containers: it stops them in parallel.
-remove_all() {
-    local role names=()
-    for role in "${ROLES[@]}"; do
-        [ -z "${container[$role]:-}" ] || names+=("${container[$role]}")
+# run-systemd.sh names each container gnome-air-raid-map-<name with / as ->-<PID>, with
+# <name> = $run/<role>. So all containers of this soak start with this prefix.
+RUN_PREFIX=gnome-air-raid-map-${run//\//-}-
+
+# descendants <PID>: the PIDs of all processes below it.
+descendants() {
+    local child
+    for child in $(pgrep -P "$1" 2> /dev/null); do
+        echo "$child"
+        descendants "$child"
     done
-    [ ${#names[@]} -eq 0 ] || podman rm -f -t 5 "${names[@]}" > /dev/null 2>&1
+}
+
+# Stops the launchers that still run, with their child processes (podman), and waits
+# for them. A container that a launcher was about to create then exists, or never will.
+stop_launchers() {
+    local role launchers=() all=() p n alive
+    for role in "${ROLES[@]}"; do
+        [ -n "${pid[$role]:-}" ] || continue
+        launchers+=("${pid[$role]}")
+        all+=("${pid[$role]}" $(descendants "${pid[$role]}"))
+    done
+    [ ${#all[@]} -gt 0 ] || return 0
+    kill "${all[@]}" 2> /dev/null
+    # A process that ignores SIGTERM gets SIGKILL after 5 s.
+    for ((n = 0; n < 50; n++)); do
+        alive=0
+        for p in "${all[@]}"; do ! kill -0 "$p" 2> /dev/null || alive=1; done
+        [ $alive -eq 1 ] || break
+        sleep 0.1
+    done
+    [ $alive -eq 0 ] || kill -KILL "${all[@]}" 2> /dev/null
+    wait "${launchers[@]}" 2> /dev/null
+}
+
+# One podman rm for all containers of this soak: it stops them in parallel.
+remove_all() {
+    local names
+    names=$(podman ps -a --filter "name=^$RUN_PREFIX" --format '{{.Names}}' 2> /dev/null)
+    [ -z "$names" ] || podman rm -f -t 5 $names > /dev/null 2>&1
 }
 on_exit() {
     local code=$?
@@ -101,6 +138,7 @@ on_exit() {
     [ $finished -eq 1 ] && return
     log "FAIL: soak.sh stopped before the end (exit status $code); removing the containers"
     echo "soak.sh stopped at $(date -Is), exit status $code" >> "$dir/aborted"
+    stop_launchers
     remove_all
     log "the containers are removed"
 }
@@ -126,8 +164,11 @@ for role in "${ROLES[@]}"; do
 done
 status=0
 for role in "${ROLES[@]}"; do
-    if wait "${pid[$role]}" && [ -s "$(out_of "$role")/container" ]; then
+    wait "${pid[$role]}" && started=1 || started=0
+    unset "pid[$role]"
+    if [ $started -eq 1 ] && [ -s "$(out_of "$role")/container" ]; then
         container[$role]=$(cat "$(out_of "$role")/container")
+        registered[$role]=$(date +%s)
         log "$role: started container ${container[$role]}"
     else
         log "FAIL: $role: the container did not start; see $dir/start-$role.log"
@@ -274,11 +315,18 @@ while [ ${#done_role[@]} -lt ${#ROLES[@]} ]; do
             # A sampler that stops writes no new samples, but its container keeps running:
             # only the sampler stops it. After "sampler end" no sample comes while the
             # container stops, and that is not a failure.
+            # Until the first sample, the age counts from the registration of the container.
             epoch=$(cut -f1 <<< "$line")
-            if [[ $epoch =~ ^[0-9]+$ ]] && ! sampler_ended "$role"; then
-                age=$(($(date +%s) - epoch))
+            if ! sampler_ended "$role"; then
+                if [[ $epoch =~ ^[0-9]+$ ]]; then
+                    age=$(($(date +%s) - epoch))
+                    what="the last sample is $age s old"
+                else
+                    age=$(($(date +%s) - registered[$role]))
+                    what="no sample since the start, $age s ago"
+                fi
                 if [ $age -gt $MAX_SAMPLE_AGE ]; then
-                    log "FAIL: $role: the sampler stopped (the last sample is $age s old, more than $MAX_SAMPLE_AGE s)"
+                    log "FAIL: $role: the sampler stopped ($what, more than $MAX_SAMPLE_AGE s)"
                     failed=1
                 fi
             fi
