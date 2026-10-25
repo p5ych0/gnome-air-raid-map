@@ -15,7 +15,9 @@
 //   roles (updater/, updater-unchanged/), each with samples.tsv, gc.tsv, runs.tsv,
 //   journal.txt and soak-info.txt. Each updater role is checked against the control.
 //   Data (any role): no "aborted" file; no gap between samples above 150 s; with
-//   --expect, the samples cover the expected seconds (90 s slack).
+//   --expect, the samples cover the expected seconds (90 s slack); every GC probe has
+//   3 proven GC passes, a malloc_trim(0) that ran, and a sample after it. A failed probe
+//   is listed with its reason, and its sample does not count.
 //   Updater runs: no gap between run starts above 90 s (with the gaps from the first
 //   sample to the first run and from the last run to the last sample); at least 90 %
 //   of the runs that 30 s steps allow (one run of slack at the end); MemoryPeak
@@ -25,12 +27,16 @@
 //   succeed is listed with a REVIEW line: its cause must be known (spec 7.4, check
 //   4). REVIEW does not change the exit status.
 //   gnome-shell (spec 7.4, check 5): shell in both containers for the whole soak;
-//   every GC probe ran; for the raw samples (every 60 s) and for the post-GC samples
-//   (30 s after each GC probe), PSS and its anonymous part: the trend of the updater
-//   container minus the trend of the control, over the time after the warm-up, gives
-//   a growth of less than 1 % of the control PSS; the updater adds less than 1 % of
-//   one core to the shell service with its children (the glycin image loaders). The
-//   CPU of the gnome-shell process alone is printed too.
+//   the live memory, which is the anonymous PSS 5 s after the malloc_trim(0) of each
+//   good probe after the warm-up: the largest value in the second half of the soak
+//   minus the largest value in the first half, minus the same rise of the control, is
+//   at most 2 units (16,200 KB; one unit is one 1920x1080 RGBA picture buffer); the
+//   updater adds less than 1 % of one core to the shell service with its children (the
+//   glycin image loaders). The trends of the raw samples (every 60 s) and of the
+//   one-GC samples (after the first GC pass of each probe) are printed, but not judged:
+//   they also count the free memory that glibc keeps in gnome-shell after picture
+//   changes (docs/decisions/2026-10-25-shell-memory.md). The CPU of the gnome-shell
+//   process alone is printed too.
 //
 // Exit status: 0 if every check passes, 1 if a check fails, 2 for a usage error.
 import GLib from 'gi://GLib';
@@ -132,6 +138,23 @@ const MAX_RUN_GAP_S = 90;       // a run every 30 s
 const MIN_RUN_SHARE = 0.9;      // of the runs that 30 s steps allow
 const EXPECT_SLACK_S = 90;      // the last sample can be up to one step early
 
+// Check 5 (docs/decisions/2026-10-25-shell-memory.md).
+const DECISION = 'docs/decisions/2026-10-25-shell-memory.md';
+const GC_PASSES = 3;            // proven GC passes in each probe
+const UNIT_KB = 8100;           // one 1920x1080 RGBA picture buffer
+const LIVE_LIMIT_UNITS = 2;     // the added rise of the live memory
+
+// Why a GC probe gives no good sample of the live memory, or null for a good probe.
+function probeProblem(g) {
+    if (String(g.collected).includes('shell restarted')) return 'gnome-shell restarted during the probe';
+    if (g.trim === undefined) return 'no malloc_trim (a probe of an older sampler, with one GC pass)';
+    if (g.gc_passes !== GC_PASSES)
+        return `${Number.isFinite(g.gc_passes) ? g.gc_passes : 0} of ${GC_PASSES} GC passes proven (${g.collected})`;
+    if (g.trim !== 'ok') return `malloc_trim failed: ${g.trim_detail || 'no reason'}`;
+    if (typeof g.anon_trim_kb !== 'number') return 'no sample after the trim';
+    return null;
+}
+
 // Linear trend in KB per hour of y over the samples, and the growth over their span.
 function trendOf(rows, x, y) {
     const use = rows.filter(r => typeof r[y] === 'number');
@@ -154,7 +177,17 @@ function loadRole(dir, name) {
     return {name, dir, all, gc, runs, label: label ? label[1] : null, samples: all};
 }
 
-// The samples of one container: PSS trends after the warm-up, the post-GC trends, CPU use.
+// The largest live value in each half of the soak (the halves split at mid), and the rise
+// from the first half to the second.
+function liveRise(probes, mid) {
+    const largest = list => (list.length ? maxBy(list, g => g.anon_trim_kb) : null);
+    const first = largest(probes.filter(g => g.elapsed_s < mid));
+    const second = largest(probes.filter(g => g.elapsed_s >= mid));
+    return {first, second, rise: first && second ? second.anon_trim_kb - first.anon_trim_kb : NaN};
+}
+
+// The samples of one container: PSS trends after the warm-up, the one-GC trends, the live
+// memory of the good probes, CPU use.
 function shellSummary(role, warmup) {
     const samples = role.samples;
     const alive = samples.filter(s => typeof s.shell_pid === 'number' && s.shell_pid > 0 && typeof s.shell_pss_kb === 'number');
@@ -165,16 +198,20 @@ function shellSummary(role, warmup) {
     const first = alive[0], last = alive[alive.length - 1];
     const seconds = last.elapsed_s - first.elapsed_s;
     const gcLate = role.gc.filter(g => g.elapsed_s >= warmup && g.elapsed_s <= role.cut);
+    // The sample after the first GC pass (an older sampler: 30 s after its one GC pass).
+    const oneGc = (g, kind) => g[`${kind}_gc1_kb`] ?? g[`${kind}_after_kb`];
+    const oneGcRows = gcLate.map(g => ({elapsed_s: g.elapsed_s, pss: oneGc(g, 'pss'), anon: oneGc(g, 'anon')}));
+    const live = gcLate.filter(g => probeProblem(g) === null);
     const result = {
         name: role.name, samples: samples.length, alive: alive.length, restarts: pids.size - 1,
-        meanPss: mean(use.map(s => s.shell_pss_kb)),
         pss: trendOf(use, 'elapsed_s', 'shell_pss_kb'),
         anon: trendOf(use, 'elapsed_s', 'shell_pss_anon_kb'),
         group: trendOf(use, 'elapsed_s', 'group_pss_kb'),
-        gcPss: trendOf(gcLate, 'elapsed_s', 'pss_after_kb'),
-        gcAnon: trendOf(gcLate, 'elapsed_s', 'anon_after_kb'),
+        gcPss: trendOf(oneGcRows, 'elapsed_s', 'pss'),
+        gcAnon: trendOf(oneGcRows, 'elapsed_s', 'anon'),
+        live: liveRise(live, role.cut / 2),
+        liveProbes: live.length,
         gcProbes: role.gc.length,
-        gcCollected: role.gc.filter(g => g.collected === 'true').length,
         shellJournal: last.shell_journal_lines,
         seconds,
         cpu: last.shell_cpu_s - first.shell_cpu_s,
@@ -187,11 +224,16 @@ function shellSummary(role, warmup) {
         `anonymous part: first ${first.shell_pss_anon_kb}, last ${last.shell_pss_anon_kb}`);
     print(`  raw trend after ${hms(warmup)} warm-up (${use.length} samples): PSS ${fixed(result.pss.slope)} KB/h, ` +
         `anonymous ${fixed(result.anon.slope)} KB/h, all processes of the shell service ${fixed(result.group.slope)} KB/h`);
-    print(`  GC probes: ${result.gcProbes}, collected ${result.gcCollected}; post-GC trend after the warm-up ` +
-        `(${gcLate.length} probes): PSS ${fixed(result.gcPss.slope)} KB/h, anonymous ${fixed(result.gcAnon.slope)} KB/h`);
-    for (const g of role.gc)
-        print(`    probe at ${hms(g.elapsed_s)}: collected ${g.collected}; PSS ${g.pss_before_kb} -> ${g.pss_after_kb} KB, ` +
-            `anonymous ${g.anon_before_kb} -> ${g.anon_after_kb} KB`);
+    print(`  GC probes: ${result.gcProbes}, good ${role.gc.filter(g => probeProblem(g) === null).length}; ` +
+        `one-GC trend after the warm-up (${gcLate.length} probes): PSS ${fixed(result.gcPss.slope)} KB/h, ` +
+        `anonymous ${fixed(result.gcAnon.slope)} KB/h`);
+    const value = v => v ?? 'n/a';
+    for (const g of role.gc) {
+        print(`    probe at ${hms(g.elapsed_s)}: GC passes ${value(g.gc_passes)} (${g.collected}); ` +
+            `malloc_trim ${value(g.trim)}${g.trim_detail ? ` (${g.trim_detail})` : ''}; anonymous PSS KB: ` +
+            `before ${value(g.anon_before_kb)}, after 1 GC ${value(oneGc(g, 'anon'))}, ` +
+            `after ${GC_PASSES} GCs ${value(g.anon_gc3_kb)}, after the trim ${value(g.anon_trim_kb)}`);
+    }
     print(`  CPU: gnome-shell ${fixed(result.cpu)} s (${fixed(result.cpu / seconds * 100, 3)} % of one core), ` +
         `shell service with its children ${fixed(result.groupCpu)} s (${fixed(result.groupCpu / seconds * 100, 3)} %)`);
     const metadata = alive.filter(s => typeof s.metadata_write_bytes === 'number');
@@ -210,6 +252,13 @@ function dataChecks(role, expect) {
         `data: ${role.name}: no gap between samples above ${MAX_SAMPLE_GAP_S} s (largest ${gap} s)`);
     if (expect !== null)
         verdict(duration >= expect - EXPECT_SLACK_S, `data: ${role.name}: the samples cover the expected ${expect} s (${duration} s)`);
+    // A failed trim never counts as a good sample of the live memory.
+    const bad = role.gc.map(g => [g, probeProblem(g)]).filter(([, problem]) => problem !== null);
+    for (const [g, problem] of bad)
+        print(`  ${role.name}: probe at ${hms(g.elapsed_s)}: ${problem}`);
+    verdict(role.gc.length >= 1 && bad.length === 0,
+        `data: ${role.name}: every GC probe has ${GC_PASSES} proven GC passes and a good malloc_trim ` +
+        `(${role.gc.length - bad.length} of ${role.gc.length})`);
 }
 
 // The runs of one updater role (spec 7.4, check 4, and goal 6).
@@ -305,23 +354,36 @@ function runChecks(role) {
             '(see journal.txt at the same time)');
 }
 
-// Spec 7.4, check 5, for one updater role against the control: the raw and the
-// post-GC trends of PSS and of its anonymous part, and the CPU time.
+// Spec 7.4, check 5, for one updater role against the control: the live memory (the
+// plateau rule) and the CPU time. The raw and the one-GC trends are information only.
 function shellChecks(updater, control, span) {
     const added = (key) => updater[key].slope - control[key].slope;
-    const limit = control.meanPss / 100;
-    print(`added by ${updater.name} (over ${hms(span)} after the warm-up; the limit is 1 % of the control PSS, ${fixed(limit)} KB):`);
-    const rules = [
+    print(`added by ${updater.name} (over ${hms(span)} after the warm-up):`);
+    print('  not judged: the raw and the one-GC trends also count the free memory that glibc keeps in ' +
+        `gnome-shell after picture changes (allocator retention; ${DECISION})`);
+    const trends = [
         ['pss', 'raw PSS'], ['anon', 'raw anonymous PSS'],
-        ['gcPss', 'post-GC PSS'], ['gcAnon', 'post-GC anonymous PSS'],
+        ['gcPss', 'one-GC PSS'], ['gcAnon', 'one-GC anonymous PSS'],
     ];
-    for (const [key, label] of rules) {
+    for (const [key, label] of trends) {
         const trend = added(key);
-        const growth = trend * hours(span);
-        print(`  ${label}: trend ${fixed(trend)} KB/h, growth ${fixed(growth)} KB`);
-        verdict(Number.isFinite(growth) && growth < limit,
-            `${updater.name}: gnome-shell ${label}: no trend that the control does not have (added growth ${fixed(growth)} KB)`);
+        print(`  ${label}: trend ${fixed(trend)} KB/h, growth ${fixed(trend * hours(span))} KB (not judged)`);
     }
+    const limit = LIVE_LIMIT_UNITS * UNIT_KB;
+    print(`  live memory: anonymous PSS after ${GC_PASSES} proven GC passes and malloc_trim(0) ` +
+        `(1 unit = ${UNIT_KB} KB):`);
+    for (const shell of [updater, control]) {
+        const {first, second, rise} = shell.live;
+        const at = g => (g ? `${g.anon_trim_kb} KB (at ${hms(g.elapsed_s)})` : 'no good probe');
+        print(`    ${shell.name}: ${shell.liveProbes} good probes; largest value in the first half ${at(first)}, ` +
+            `in the second half ${at(second)}; rise ${fixed(rise, 0)} KB`);
+    }
+    const addedRise = updater.live.rise - control.live.rise;
+    print(`  added rise ${fixed(addedRise, 0)} KB (${fixed(addedRise / UNIT_KB, 2)} units); ` +
+        `the limit is ${LIVE_LIMIT_UNITS} units (${limit} KB)`);
+    verdict(Number.isFinite(addedRise) && addedRise <= limit,
+        `${updater.name}: gnome-shell live memory: the rise of the largest value from the first to the second half, ` +
+        `minus the rise of the control, is at most ${LIVE_LIMIT_UNITS} units (added rise ${fixed(addedRise, 0)} KB)`);
     const addedCpu = (updater.cpu / updater.seconds - control.cpu / control.seconds) * 100;
     const addedGroupCpu = (updater.groupCpu / updater.seconds - control.groupCpu / control.seconds) * 100;
     print(`  CPU: ${fixed(addedCpu, 3)} % of one core (with the children of the shell: ${fixed(addedGroupCpu, 3)} %)`);
@@ -371,10 +433,6 @@ function soak(dir, expect) {
         verdict(shells[name].restarts === 0 && control.restarts === 0 &&
             shells[name].alive === shells[name].samples && control.alive === control.samples,
         `${name}: gnome-shell runs in this container and in the control for the whole soak`);
-        verdict(shells[name].gcProbes >= 1 && shells[name].gcCollected === shells[name].gcProbes &&
-            control.gcProbes >= 1 && control.gcCollected === control.gcProbes,
-        `${name}: every GC probe ran, in this container and in the control ` +
-            `(${shells[name].gcCollected}/${shells[name].gcProbes}, control ${control.gcCollected}/${control.gcProbes})`);
         shellChecks(shells[name], control, duration - warmup);
     }
 }
