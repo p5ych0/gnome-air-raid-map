@@ -56,6 +56,8 @@ POLL=${GNOME_TEST_SOAK_POLL:-30}
 MAX_SAMPLE_AGE=150
 PREFIX=gnome-air-raid-map-soak-
 GDB=${GNOME_TEST_SOAK_GDB:-gdb}
+# The proc folder that host_pid reads (a test gives a fake one). gdb always uses /proc.
+PROC=${GNOME_TEST_SOAK_PROC:-/proc}
 # The sampler waits 150 s for the answer.
 TRIM_LIMIT=120
 
@@ -141,11 +143,15 @@ done
 host_pid() {
     local init ns hpid
     init=$(podman inspect -f '{{.State.Pid}}' "${container[$1]}" 2> /dev/null)
-    ns=$(readlink "/proc/$init/ns/pid" 2> /dev/null) || return 0
+    ns=$(readlink "$PROC/$init/ns/pid" 2> /dev/null) || return 0
     # The last NSpid field is the PID in the innermost namespace. Other containers can
     # have the same container PID, so the PID namespace must be the one of the container.
-    for hpid in $(awk -v p="$2" '/^NSpid:/ && $NF == p { print $2 }' /proc/[0-9]*/status 2> /dev/null); do
-        if [ "$(readlink "/proc/$hpid/ns/pid" 2> /dev/null)" = "$ns" ]; then
+    # A process can exit during the scan, after the glob and before gawk opens its status
+    # file. gawk then stops with a fatal error and reads no more files, so BEGINFILE skips
+    # a file that it cannot open (ERRNO is set). BEGINFILE and ERRNO need GNU awk.
+    for hpid in $(gawk -v p="$2" 'BEGINFILE { if (ERRNO) nextfile } /^NSpid:/ && $NF == p { print $2 }' \
+        "$PROC"/[0-9]*/status 2> /dev/null); do
+        if [ "$(readlink "$PROC/$hpid/ns/pid" 2> /dev/null)" = "$ns" ]; then
             echo "$hpid"
             return 0
         fi

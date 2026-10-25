@@ -52,14 +52,15 @@ const HEADER = ['epoch', 'elapsed_s', 'shell_pid', 'shell_pss_kb', 'shell_pss_an
 // many seconds (null: the container runs until soak.sh stops). trim: it asks for a
 // malloc_trim(0) in gnome-shell (request 17), as soak-sampler.sh does. The fake container
 // has no PID namespace of its own: its "gnome-shell" is a sleep process on the host, so
-// its container PID is its host PID.
-function sampler({age, ended = false, stopAfter = null, trim = false}) {
+// its container PID is its host PID. pids: the host PID of the container init and the
+// container PID of gnome-shell in the request, for a fake proc folder.
+function sampler({age, ended = false, stopAfter = null, trim = false, pids = null}) {
     return `#!/bin/bash
 out=$1
 ${trim ? `sleep 10 < /dev/null > /dev/null 2>&1 &
 shell=$!
-echo "$shell" > "$out/init-pid"
-printf '17\\t%s\\n' "$shell" > "$out/trim-request"` : ''}
+echo "${pids ? pids.init : '$shell'}" > "$out/init-pid"
+printf '17\\t%s\\n' "${pids ? pids.shell : '$shell'}" > "$out/trim-request"` : ''}
 printf '# %s\\n' '${HEADER}' > "$out/samples.tsv"
 printf '%s\\t0\\t4242\\t1000\\t500\\t10\\t2000\\t1.00\\t1500\\t3000000\\t1000000\\t0\\t0\\t\\n' \\
     $(($(date +%s) - ${age})) >> "$out/samples.tsv"
@@ -153,6 +154,34 @@ test('the watcher calls malloc_trim(0) in gnome-shell for the trim request of a 
     assertTrue(lines.some(line => / updater: malloc_trim\(0\) in gnome-shell: ok: malloc_trim returned 1$/.test(line)),
         `the trim line in soak.log:\n${lines.join('\n')}`);
     assertEqual(status, 0, 'exit status');
+});
+
+// host_pid reads the NSpid line of each status file of the proc folder. A process can exit
+// after the glob and before gawk opens its status file. The fake proc folder has such a
+// file (1/status, a link to nothing) before the status file of gnome-shell. gnome-shell
+// has the container PID 55 and the host PID 8888, in the PID namespace of the container
+// init (host PID 700).
+test('the host PID scan skips a status file that is gone, and finds gnome-shell', () => {
+    const proc = GLib.dir_make_tmp('air-raid-proc-XXXXXX');
+    const link = (path, target) => {
+        GLib.mkdir_with_parents(GLib.path_get_dirname(`${proc}/${path}`), 0o700);
+        Gio.File.new_for_path(`${proc}/${path}`).make_symbolic_link(target, null);
+    };
+    try {
+        link('1/status', 'gone');
+        link('700/ns/pid', 'pid:[4026532001]');
+        link('8888/ns/pid', 'pid:[4026532001]');
+        GLib.file_set_contents(`${proc}/8888/status`, 'Name:\tgnome-shell\nNSpid:\t8888\t55\n');
+        const {results, gdbArgs} = soakWith({
+            updater: {age: 0, stopAfter: 3, trim: true, pids: {init: 700, shell: 55}},
+            'updater-unchanged': {age: 0, stopAfter: 3}, control: {age: 0, stopAfter: 3},
+        }, {GNOME_TEST_SOAK_GDB: '@/bin/gdb', GNOME_TEST_SOAK_PROC: proc});
+        assertEqual(results.updater, '17\tok\tmalloc_trim returned 1\n', 'trim-result of the updater');
+        const args = (gdbArgs ?? '').split('\n');
+        assertEqual(args[args.indexOf('-p') + 1], '8888', `the PID of gdb in:\n${gdbArgs}`);
+    } finally {
+        removeTree(proc);
+    }
 });
 
 test('a trim request fails with the reason when gdb is not installed on the host', () => {
