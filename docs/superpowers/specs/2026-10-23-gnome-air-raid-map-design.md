@@ -489,11 +489,24 @@ Checks:
    flat, and every error has a known cause (for example, the network was down).
 5. During the 24-hour run, record the PSS and CPU time of `gnome-shell` every
    minute. Compare with a 24-hour run of the same GNOME session without the
-   updater. Pass: `gnome-shell` PSS has no upward trend that the control run
-   does not have, and the updater adds less than 1 % of one core to the CPU
-   of the Shell service on average. The Shell service counts `gnome-shell`
-   with its children, because a picture update starts the glycin image
-   loaders as children of the Shell.
+   updater. The PSS check uses the live memory of `gnome-shell`. Once per
+   hour, a probe makes three garbage collections in `gnome-shell`. A
+   `WeakRef` proves that each collection ran. Then the probe calls
+   `malloc_trim(0)` in `gnome-shell`. 5 s later, it records the anonymous
+   PSS: the post-trim value. Pass:
+   - The plateau rule: take the largest post-trim value in the second half
+     of the run minus the largest value in the first half. Subtract the same
+     difference of the control. The result is 2 units (16,200 KB) or less.
+     One unit is one 1920×1080 RGBA picture buffer.
+   - The updater adds less than 1 % of one core to the CPU of the Shell
+     service on average. The Shell service counts `gnome-shell` with its
+     children, because a picture update starts the glycin image loaders as
+     children of the Shell.
+
+   The raw PSS also counts the free memory that glibc keeps in
+   `gnome-shell` after picture changes. It rises to a plateau and then
+   stops, so the check does not judge it. The reasons are in
+   [`docs/decisions/2026-10-25-shell-memory.md`](../../decisions/2026-10-25-shell-memory.md).
 
 ## 8. Development process
 
