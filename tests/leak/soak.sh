@@ -146,11 +146,10 @@ host_pid() {
     ns=$(readlink "$PROC/$init/ns/pid" 2> /dev/null) || return 0
     # The last NSpid field is the PID in the innermost namespace. Other containers can
     # have the same container PID, so the PID namespace must be the one of the container.
-    # A process can exit during the scan, after the glob and before gawk opens its status
-    # file. gawk then stops with a fatal error and reads no more files, so BEGINFILE skips
-    # a file that it cannot open (ERRNO is set). BEGINFILE and ERRNO need GNU awk.
-    for hpid in $(gawk -v p="$2" 'BEGINFILE { if (ERRNO) nextfile } /^NSpid:/ && $NF == p { print $2 }' \
-        "$PROC"/[0-9]*/status 2> /dev/null); do
+    # A process can exit during the scan. cat skips its file and reads the next one. awk
+    # with the files as arguments stops at such a file, and then reads no more files.
+    # The host PID is $2 of the NSpid line, so awk does not need the file names.
+    for hpid in $(cat "$PROC"/[0-9]*/status 2> /dev/null | awk -v p="$2" '/^NSpid:/ && $NF == p { print $2 }'); do
         if [ "$(readlink "$PROC/$hpid/ns/pid" 2> /dev/null)" = "$ns" ]; then
             echo "$hpid"
             return 0

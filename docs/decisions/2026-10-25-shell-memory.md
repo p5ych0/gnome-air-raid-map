@@ -156,12 +156,18 @@ the updater service:
   start and at the end.
 - A run overlapped the probe if the `ActiveState` is not `inactive` or
   `failed` at the start or at the end, or if the `InvocationID` changed.
+  A loaded service with no `InvocationID` at the start is a read that
+  failed. This also counts as an overlap.
 - The sampler then discards the sample and makes the probe again (steps 1
   to 5), 3 tries at most.
 - After 3 overlaps, the probe records "updater overlap". This probe fails
   the data check.
-- The last probe starts 720 s (3 tries of 240 s) before the end at the
-  latest, so it ends before the sampler ends.
+- A probe with a failed trim fails the data check anyway. So the sampler
+  keeps that try and does not try again, and the summary gives the reason
+  of the trim failure.
+- The last probe starts 720 s before the end at the latest. This margin
+  covers 3 tries of 240 s when the Shell answers its Evals. A Shell that
+  does not answer its Evals can make a probe take longer.
 
 `gc.tsv` records the result of each GC pass, the number of proven passes,
 the trim result, and four samples: before, after the first GC, after the

@@ -44,7 +44,12 @@ A profile of the run chose three changes:
 - `updater/net.js`: the system CA file instead of the p11-kit trust store
   (see "Trust store").
 - `updater/store.js`: the prepared boundaries next to the boundary cache.
-  The boundary steps of a run take 11.5 ms of CPU time, not 17 ms.
+  In Task 11b, the boundary steps of a run took 11.5 ms of CPU time, not
+  17 ms. The review of PR 11 added checks of the stored points and centers.
+  With these checks, the boundary steps take 16.9 ms, not 17.9 ms without
+  the prepared boundaries (the median of 78 runs of each, measured at the
+  same time). So the prepared boundaries now save about 1 to 2 ms for each
+  run.
 - `core/render.js`: a monitor with the size and scale of an earlier monitor
   gets a copy of its pixels. At the size cap with two equal monitors, the
   drawing takes 120 ms, not 203 ms.

@@ -6,7 +6,7 @@ import {importCopy, removeTree} from '../lib/files.js';
 import {startServer} from '../lib/fixture-server.js';
 import {pixelReader} from '../lib/pixels.js';
 import {syntheticView} from '../lib/fixtures.js';
-import {prepareGeometry} from '../../core/mapdata.js';
+import {prepareGeometry, regionLabelPoint} from '../../core/mapdata.js';
 import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
 import {renderPicture} from '../../core/render.js';
 import {createSession} from '../../updater/net.js';
@@ -453,6 +453,28 @@ const SHAPE = {
     // The center must be the label point that prepareGeometry computes, bit for bit.
     'a center one ulp from the label point': entry => {
         entry.numbers[4] = nextUp(entry.numbers[4]);
+    },
+    // Every point 1000 to the right, the bounds of the moved points, and the label point
+    // of the moved rings as each center: only the +-180 check rejects this entry.
+    'every point 1000 to the right, with its bounds and centers': entry => {
+        const n = entry.numbers, xs = [], ys = [];
+        let k = 4;
+        for (const region of entry.header.regions) {
+            const center = k;
+            k += 2;
+            const polygons = region.rings.map(lengths => lengths.map(length => {
+                const ring = [];
+                for (let i = 0; i < length; i++, k += 2) {
+                    n[k] += 1000;
+                    ring.push([n[k], n[k + 1]]);
+                    xs.push(n[k]);
+                    ys.push(n[k + 1]);
+                }
+                return ring;
+            }));
+            [n[center], n[center + 1]] = regionLabelPoint(polygons);
+        }
+        n.splice(0, 4, Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys));
     },
 };
 // The next double above a positive x: its bits as an integer, plus one.

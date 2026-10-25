@@ -49,9 +49,11 @@ const sha256 = text => GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256
 
 // The prepared entry of a boundary file: the prepareGeometry result for one version of
 // the file, next to the file (<name>.prepared). With the entry, a run does not parse and
-// project the GeoJSON, but it still reads, decodes and hashes the text of the file. In
-// Task 11b the boundary steps of a run then took 11.5 ms of CPU time, not 17 ms: about
-// 5 ms less for each run. Layout:
+// project the GeoJSON, but it still reads, decodes and hashes the text of the file, and
+// readPrepared checks the extent of the points and the label points. With these checks the
+// boundary steps of a run take 16.9 ms of CPU time, not 17.9 ms without the entry: about
+// 1 to 2 ms less for each run. These are medians of 78 runs of each at 1920x1080, measured
+// with the method of Task 11b, at the same time; the means are 16.4 ms and 18.2 ms. Layout:
 //   64 bytes   the SHA-256 (hex) of all bytes after it
 //   4 bytes    the header length H, little-endian
 //   H bytes    the header, JSON: the format, the version of the file, the code version,

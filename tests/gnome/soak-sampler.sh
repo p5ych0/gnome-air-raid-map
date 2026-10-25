@@ -43,11 +43,15 @@
 #                reads the InvocationID and the ActiveState of the updater service before
 #                the first sample and after the last one. A run overlapped the probe if
 #                the ActiveState is not inactive or failed at the start or at the end, or
-#                if the ID changed. The sampler then discards the probe (sampler.log has
-#                a line) and starts it again (steps 1 to 5), 3 tries at most. Three
-#                overlaps give a line with "updater overlap" in "collected", and
-#                summarize.js fails that probe. The control container has no updater and
-#                no check.
+#                if the ID changed. A loaded service with no InvocationID at the start (a
+#                read that failed) also counts as an overlap. The sampler then discards
+#                the probe (sampler.log has a line) and starts it again (steps 1 to 5), 3
+#                tries at most. Three overlaps give a line with "updater overlap" in
+#                "collected", and summarize.js fails that probe. A failed trim also fails
+#                the probe, so the sampler keeps a try with a failed trim and does not
+#                try again: the line then gives the reason of the trim failure. The
+#                control container has no updater (its service is not loaded) and no
+#                check.
 #                One line: the start time, gnome-shell PID, "collected" (the result of
 #                each collection: true, false or error; or "shell restarted", "updater
 #                overlap", or both),
@@ -133,7 +137,8 @@ gc_pass() {
 }
 
 # In an updater container: waits until a run of the updater ends, 60 s at most. A run
-# starts every 30 s and takes about 0.5 s, so the probe that follows has no picture change.
+# starts every 30 s and takes about 0.5 s, so the probe that follows usually has no picture
+# change.
 wait_run_end() {
     local unit=${UNITS[0]} id0 state0 id state i
     id0=$(user_show -p InvocationID --value "$unit" 2> /dev/null)
@@ -168,13 +173,17 @@ trim_request() {
     printf 'fail\tno answer from the host in %s s (tests/leak/soak.sh answers the trim requests)' "$TRIM_WAIT"
 }
 
-# overlapped <id> <state>: succeeds if an updater run overlapped a try of a probe that
-# started with the InvocationID id and the ActiveState state (an empty id: the control
-# container, which has no updater): a run was active at the start, the ID changed, or a
-# run is active now.
+# overlapped <id> <state> <load>: succeeds if an updater run overlapped a try of a probe
+# that started with the InvocationID id, the ActiveState state and the LoadState load: a
+# run was active at the start, the ID changed, or a run is active now. An empty id with
+# the load "loaded" is a start read that failed: that try counts as overlapped. An empty
+# id of a service that is not loaded is the control container, which has no updater.
 overlapped() {
     local unit=${UNITS[0]} id state
-    [ -n "$1" ] || return 1
+    if [ -z "$1" ]; then
+        [ "$3" = loaded ]
+        return
+    fi
     case $2 in inactive | failed) ;; *) return 0 ;; esac
     id=$(user_show -p InvocationID --value "$unit" 2> /dev/null)
     state=$(user_show -p ActiveState --value "$unit" 2> /dev/null)
@@ -184,16 +193,17 @@ overlapped() {
 
 # One GC probe and its line in gc.tsv. It runs in the background.
 gc_probe() {
-    local pid epoch before gc1 gc3 trim after results passes result i try id0 state0 key value clean=0 reasons=()
+    local pid epoch before gc1 gc3 trim after results passes result i try id0 state0 load0 key value kept=0 reasons=()
     for ((try = 1; try <= PROBE_TRIES; try++)); do
         results=() passes=0
         wait_run_end
         sleep 5
-        # The InvocationID and the ActiveState at the start of the try, from one read.
-        id0='' state0=''
+        # The InvocationID, the ActiveState and the LoadState at the start of the try, from
+        # one read.
+        id0='' state0='' load0=''
         while IFS='=' read -r key value; do
-            case $key in InvocationID) id0=$value ;; ActiveState) state0=$value ;; esac
-        done < <(user_show -p InvocationID -p ActiveState "${UNITS[0]}" 2> /dev/null)
+            case $key in InvocationID) id0=$value ;; ActiveState) state0=$value ;; LoadState) load0=$value ;; esac
+        done < <(user_show -p InvocationID -p ActiveState -p LoadState "${UNITS[0]}" 2> /dev/null)
         pid=$(shell_pid)
         epoch=$(date +%s)
         before=$(memory "$pid")
@@ -208,12 +218,14 @@ gc_probe() {
         trim=$(trim_request "$pid")
         sleep 5
         after=$(memory "$pid")
-        if ! overlapped "$id0" "$state0"; then clean=1; break; fi
+        # The line keeps this try (kept=1) if no run overlapped it, or if its trim failed:
+        # a failed trim fails the probe anyway, and another try would only hide the reason.
+        if [ "${trim%%$'\t'*}" != ok ] || ! overlapped "$id0" "$state0" "$load0"; then kept=1; break; fi
         echo "$(date -Is) GC probe try $try of $PROBE_TRIES: an updater run overlapped it; the sample is discarded" \
             >> "$OUT/sampler.log"
     done
     [ "$(shell_pid)" = "$pid" ] || reasons+=("shell restarted")
-    [ $clean -eq 1 ] || reasons+=("updater overlap")
+    [ $kept -eq 1 ] || reasons+=("updater overlap")
     [ ${#reasons[@]} -eq 0 ] || results=("${reasons[@]}")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$epoch" "$((epoch - start))" "$pid" \
         "$(IFS=,; echo "${results[*]}")" "$passes" "$trim" "$before" "$gc1" "$gc3" "$after" "$(date +%s)" \
