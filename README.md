@@ -112,7 +112,7 @@ picture, or the settings of other users.
 | `~/.local/share/gnome-air-raid-map/` | Installer | The program (`core/`, `updater/`, `LICENSE`) and the failure banner `banner.png` |
 | `~/.config/systemd/user/` | Installer | The units `gnome-air-raid-map.service`, `gnome-air-raid-map.timer`, and `gnome-air-raid-map-failed.service` |
 | `~/.local/state/gnome-air-raid-map/previous-wallpaper` | Installer | Your wallpaper settings from before the first install |
-| `~/.cache/gnome-air-raid-map/` | Updater | The NEPTUN boundary files and a prepared copy of them |
+| `~/.cache/gnome-air-raid-map/` | Updater | The NEPTUN boundary files, with their ETags and the time of the last check |
 | `$XDG_RUNTIME_DIR/gnome-air-raid-map/` | Updater | The wallpaper picture and the state file. This folder is in RAM, and the system deletes it at logout. |
 
 These paths are the defaults. If you set `XDG_DATA_HOME`, `XDG_CONFIG_HOME`,
@@ -274,12 +274,15 @@ We measured these values on Fedora 44:
 
 - One run at 1920×1080 uses about 0.22 to 0.24 s of CPU time and 72 to 79 MB
   of peak memory.
-- With the real timer against NEPTUN, at 1920×1080, the average is 0.68 % of
-  one CPU core (two 35-minute measurements).
+- With the real timer against NEPTUN, at 1920×1080, the average was 0.68 %
+  of one CPU core (two 35-minute measurements). That build kept a prepared
+  copy of the boundary files. The current build does not, so we estimate
+  about 2 % more updater CPU time: about 0.70 % of one core.
 - At the size cap with two equal 4K monitors, a run uses 0.62 s of CPU time
   or less. With three different monitors at the cap, a run uses up to 0.95 s
   on a quiet machine. When other programs load the machine, a run can use
-  about 1.3 s.
+  about 1.3 s. We measured these values with the prepared copy too. Without
+  it, a run uses about 5 ms more.
 - GNOME Shell over 24 hours, at 1920×1080 with the default label mode,
   compared with a session without the updater:
   - The updater adds 0.504 % of one CPU core to the Shell service (the

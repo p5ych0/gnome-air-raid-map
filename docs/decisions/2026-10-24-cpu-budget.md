@@ -35,21 +35,28 @@ Reasons:
   that access. Spec 5.2 does not allow GTK.
 - On Fedora, the p11-kit trust store costs about 64 ms of CPU time in each
   run that uses TLS. The CA file costs 6 to 8 ms. Goal 6 went from about
-  0.9 % to 0.68 % of one core (see "Against NEPTUN").
+  0.9 % to 0.68 % of one core (see "Against NEPTUN"). The 0.68 % was
+  measured with the prepared boundaries (the second change below), which
+  were removed later. Without them, the estimate is about 2 % more updater
+  CPU: about 0.70 % of one core.
 
 ## Changes of Task 11b
 
-A profile of the run chose three changes:
+A profile of the run chose three changes (changes 1, 2 and 3):
 
 - `updater/net.js`: the system CA file instead of the p11-kit trust store
   (see "Trust store").
 - `updater/store.js`: the prepared boundaries next to the boundary cache.
   In Task 11b, the boundary steps of a run took 11.5 ms of CPU time, not
-  17 ms. The review of PR 11 added checks of the stored points and centers.
-  With these checks, the boundary steps take 16.9 ms, not 17.9 ms without
-  the prepared boundaries (the median of 78 runs of each, measured at the
-  same time). So the prepared boundaries now save about 1 to 2 ms for each
-  run.
+  17 ms. **This change was removed on 2026-10-25, in the review of PR 11.**
+  The review required checks of the stored points and centers. With these
+  checks, the prepared boundaries saved only about 1 ms for each run, so
+  they did not pay for their file format and their checks. Each run now
+  parses and projects the boundary files again. The medians of the boundary
+  steps, 78 runs of each, measured at the same time:
+  - without the prepared boundaries: 17.9 ms;
+  - with the prepared boundaries of Task 11b: 12.9 ms;
+  - with the prepared boundaries and the checks of the review: 16.9 ms.
 - `core/render.js`: a monitor with the size and scale of an earlier monitor
   gets a copy of its pixels. At the size cap with two equal monitors, the
   drawing takes 120 ms, not 203 ms.
@@ -58,7 +65,10 @@ A profile of the run chose three changes:
 
 All sets ran on one host: Fedora 44, 16 cores, GJS 1.88.1. The NEPTUN pairs
 ran in the Fedora 44 test image. "Before" is the branch before Task 11b, and
-"after" is the branch with the three changes.
+"after" is the branch with the three changes. Change 2 (the prepared
+boundaries) was removed later. So each "after" value includes its gain of
+about 5 ms for each run, and a run of the current branch uses about 5 ms
+more CPU time.
 
 ### 1,000 runs against the fixture server
 
@@ -82,6 +92,18 @@ has one monitor, so the monitor copy has no effect there.
 
 On another day, Task 11 measured the cap layout before the changes at a max
 of 1.24 s. The numbers change from day to day.
+
+On 2026-10-25, after the removal of change 2, one more set of 1,000 runs
+ran at 1920×1080. The soak containers ran, but no other test ran. The
+1-minute load had a median of 2.09 and a max of 2.65.
+
+- Exit codes: 1,000 × 0.
+- CPU: median 0.210 s, mean 0.212 s, p99 0.25 s, max 0.31 s.
+- Peak RSS: max 76,892 KB, mean 73,607 KB.
+- `summarize.js`: PASS for all four checks.
+
+During the 1920×1080 sets of the table, three other test containers also
+ran, so the two do not compare directly.
 
 ### Three different monitors at the size cap
 
@@ -130,7 +152,12 @@ sample.
 During pair 1, other tests of Task 11b also ran. During pair 2, no other
 test of Task 11b ran. At 1920×1080, the trust store is most of the gain.
 The monitor copy has no effect on one monitor, and the prepared boundaries
-save about 5 ms for each run.
+saved about 5 ms for each run.
+
+The "after" values were measured with change 2. Change 2 was removed
+later, so the current branch uses about 5 ms more CPU time for each run.
+That is about 2 % more updater CPU: the estimate is about 0.70 % of one
+core, not 0.68 %.
 
 ## Trust store
 

@@ -9,28 +9,6 @@ export function project(point) {
     return [lon, -Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)) * 180 / Math.PI];
 }
 
-// The label point of a region: the centroid of its largest outer ring by |area|. polygons
-// holds the projected rings of each polygon; the first ring is the outer ring. A ring with
-// |area| <= 1e-10 does not count. Returns null if no ring counts. prepareGeometry uses it,
-// and updater/store.js uses it to check a stored center.
-export function regionLabelPoint(polygons) {
-    let labelPoint = null, largestArea = -1;
-    for (const polygon of polygons) {
-        const points = polygon[0];
-        let area = 0, cx = 0, cy = 0;
-        for (let i = 0; i < points.length - 1; ++i) {
-            const a = points[i], b = points[i + 1];
-            const cross = a[0] * b[1] - b[0] * a[1];
-            area += cross; cx += (a[0] + b[0]) * cross; cy += (a[1] + b[1]) * cross;
-        }
-        if (Math.abs(area) > largestArea && Math.abs(area) > 1e-10) {
-            largestArea = Math.abs(area);
-            labelPoint = [cx / (3 * area), cy / (3 * area)];
-        }
-    }
-    return labelPoint;
-}
-
 export function prepareGeometry(collection) {
     if (!collection || collection.type !== "FeatureCollection" || !Array.isArray(collection.features) || !collection.features.length)
         throw new Error("Invalid map boundaries");
@@ -46,9 +24,10 @@ export function prepareGeometry(collection) {
             throw new Error("Unsupported map geometry");
         const raw = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
         if (!Array.isArray(raw) || !raw.length) throw new Error("Empty map geometry");
+        let labelPoint = null, largestArea = -1;
         const polygons = raw.map(function(polygon) {
             if (!Array.isArray(polygon) || !polygon.length) throw new Error("Empty polygon");
-            return polygon.map(function(ring) {
+            return polygon.map(function(ring, index) {
                 if (!Array.isArray(ring) || ring.length < 4) throw new Error("Invalid polygon ring");
                 const points = ring.map(function(p) {
                     const xy = project(p);
@@ -56,10 +35,21 @@ export function prepareGeometry(collection) {
                     bounds[2] = Math.max(bounds[2], xy[0]); bounds[3] = Math.max(bounds[3], xy[1]);
                     return xy;
                 });
+                if (index === 0) {
+                    let area = 0, cx = 0, cy = 0;
+                    for (let i = 0; i < points.length - 1; ++i) {
+                        const a = points[i], b = points[i + 1];
+                        const cross = a[0] * b[1] - b[0] * a[1];
+                        area += cross; cx += (a[0] + b[0]) * cross; cy += (a[1] + b[1]) * cross;
+                    }
+                    if (Math.abs(area) > largestArea && Math.abs(area) > 1e-10) {
+                        largestArea = Math.abs(area);
+                        labelPoint = [cx / (3 * area), cy / (3 * area)];
+                    }
+                }
                 return points;
             });
         });
-        const labelPoint = regionLabelPoint(polygons);
         if (!labelPoint) throw new Error("Degenerate map geometry");
         const label = (props.region || props.name || props.rayon || props.key)
             .replace(" область", "").replace("Автономна Республіка Крим", "Крим");
