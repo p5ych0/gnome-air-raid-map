@@ -32,6 +32,10 @@
 #   e  install again; a run that waits for a server that never answers; the uninstall
 #      during that run: the wallpaper from before the install, not the banner, and no
 #      run of the failure unit after the uninstall began.
+#   g  install from a shell with an XDG_CACHE_HOME that the user manager does not have,
+#      with a space and a %: systemd shows the value of the quoted Environment= line of
+#      the service, a timer run writes its cache there, and the uninstall from a shell
+#      without the variable deletes that cache folder.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines.
 # Files: a-live.png, b-banner.png, b-live.png, c-banner.png, c-oom-banner.png,
 # c-live.png, d-restored.png, e-restored.png (screenshots); <name>-picture.png and
@@ -125,6 +129,17 @@ install_run() {
     local name=$1 code
     shift
     as_user /repo/install.sh "$@" > "$OUT/$name.stdout" 2> "$OUT/$name.stderr"
+    code=$?
+    sed "s/^/#   $name: /" "$OUT/$name.stdout" "$OUT/$name.stderr"
+    return $code
+}
+
+# install_run_with <name> <variable=value> [--uninstall]: install_run with one more
+# variable, as a shell profile sets it.
+install_run_with() {
+    local name=$1 variable=$2 code
+    shift 2
+    as_user env "$variable" /repo/install.sh "$@" > "$OUT/$name.stdout" 2> "$OUT/$name.stderr"
     code=$?
     sed "s/^/#   $name: /" "$OUT/$name.stdout" "$OUT/$name.stderr"
     return $code
@@ -600,6 +615,33 @@ screenshot "$OUT/e-restored.png" || status=1
 check "e-restored.png shows the known wallpaper" \
     indented gjs -m /repo/tests/gnome/scenarios/centered.js "$OUT/e-restored.png" "$OUT/monitors.json" "$KNOWN_COLOR"
 journal_excerpt e "${since:-0}"
+
+# Step g (#6): the cache folder of the installer reaches the service through the
+# quoted Environment= line. install.sh writes % as %%; without it, systemd reads %x as
+# a specifier and ignores the line.
+CACHE_G="$TEST_HOME/My Cache %x"
+no_manager_cache() {
+    ! user_systemctl show-environment | grep -q '^XDG_CACHE_HOME='
+}
+shown_environment() {
+    local shown
+    shown=$(user_systemctl show -p Environment "$SERVICE")
+    echo "#   $shown"
+    [ "$shown" = "Environment=\"XDG_CACHE_HOME=$CACHE_G\"" ]
+}
+check "g: the user manager has no XDG_CACHE_HOME" no_manager_cache
+check "g: install.sh with XDG_CACHE_HOME='$CACHE_G' exits 0" install_run_with install-g "XDG_CACHE_HOME=$CACHE_G"
+check "g: systemctl --user show -p Environment $SERVICE shows XDG_CACHE_HOME=$CACHE_G" shown_environment
+before=
+rec=$(wait_run "$SERVICE" "$before" 15)
+check "g: the first timer run after the install exits 0" result_is "$rec" success
+check "g: the run wrote its boundary cache under '$CACHE_G/$APP'" \
+    test -f "$CACHE_G/$APP/oblasts.geojson" -a -f "$CACHE_G/$APP/raions.geojson" -a -f "$CACHE_G/$APP/geometry.json"
+check "g: the run wrote no cache in $CACHEDIR" test ! -e "$CACHEDIR"
+wait_idle
+check "g: install.sh --uninstall from a shell without XDG_CACHE_HOME exits 0" install_run uninstall-g --uninstall
+check "g: the uninstall deleted '$CACHE_G/$APP'" test ! -e "$CACHE_G/$APP"
+check "g: no file or folder of the program in $TEST_HOME and $TEST_RUNTIME" no_program_files
 
 echo "# systemd: $status (0: every check passed)"
 exit $status
