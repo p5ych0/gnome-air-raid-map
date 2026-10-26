@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertTrue} from '../lib/assert.js';
-import {CHECKS} from '../../updater/check-deps.js';
+import {removeTree} from '../lib/files.js';
+import {CHECKS} from '../../updater/deps.js';
 
 // The file that each check loads. The package that check-deps.js names for a
 // missing item must be the package that has this file (#9).
@@ -57,6 +59,29 @@ test('each named package has the file of its check', () => {
     }
     assertTrue(checked > 0 || !GLib.find_program_in_path('rpm') && !GLib.find_program_in_path('dpkg'),
         'no check was compared with the package database');
+});
+
+const CHECK_DEPS = GLib.filename_from_uri(
+    GLib.Uri.resolve_relative(import.meta.url, '../../updater/check-deps.js', GLib.UriFlags.NONE))[0];
+
+// The script runs its check under any file name. The copy finds the table next to it:
+// here a table with one typelib that no package has, so the import fails as for a
+// missing package.
+test('a copy under another name checks and reports a missing typelib', () => {
+    const dir = GLib.dir_make_tmp('air-raid-deps-XXXXXX');
+    try {
+        GLib.file_set_contents(`${dir}/verify-packages.js`, GLib.file_get_contents(CHECK_DEPS)[1]);
+        GLib.file_set_contents(`${dir}/deps.js`, `export const CHECKS = [{name: 'AirRaidMissing 1.0',
+            packages: ['air-raid-missing', 'air-raid-missing'], load: () => import('gi://AirRaidMissing')}];\n`);
+        const process = Gio.Subprocess.new(['gjs', '-m', `${dir}/verify-packages.js`],
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        const [, stdout, stderr] = process.communicate_utf8(null, null);
+        assertEqual(stderr, 'gnome-air-raid-map: missing AirRaidMissing 1.0: install the package air-raid-missing\n');
+        assertEqual(stdout, '');
+        assertEqual(process.get_exit_status(), 1);
+    } finally {
+        removeTree(dir);
+    }
 });
 
 await run();

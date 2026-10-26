@@ -333,6 +333,9 @@ The program needs no build step. It uses GJS with ES modules, libsoup 3,
 Cairo, Pango, and Gio. It has no npm packages, no Python, and no compiled
 code.
 
+Change `VERSION` in `updater/version.js` for each release. The render key
+includes it, so the first run after an update draws the picture again.
+
 Run the unit tests with the GJS of your computer:
 
 ```sh
