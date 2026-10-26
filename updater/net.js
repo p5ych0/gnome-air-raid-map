@@ -18,9 +18,32 @@ export function apiBase() {
 // two feeds. The Soup default of two connections for each host would queue two of them.
 const MAX_CONNECTIONS_PER_HOST = 4;
 
-export function createSession({timeout = 15} = {}) {
-    return new Soup.Session({timeout, user_agent: `gnome-air-raid-map/${VERSION}`,
+// The PEM file of the system CAs. GnuTLS on Debian and Ubuntu uses this file as its default
+// trust store. On Fedora it is the bundle that update-ca-trust extracts for TLS servers,
+// and the default trust store is p11-kit, which costs about 60 ms of CPU in each run; the
+// file costs about 6 ms (Task 11b).
+const SYSTEM_CA_FILE = '/etc/ssl/certs/ca-certificates.crt';
+
+// base: the API base. Only an https session loads a CA file. The file becomes the default
+// trust store of the process: glib-networking reads the default trust store when it
+// creates a TLS connection, before Soup gives the connection the database of the session.
+// Without a usable CA file (a missing or empty file), nothing changes.
+export function createSession({timeout = 15, base = '', anchors = SYSTEM_CA_FILE} = {}) {
+    const session = new Soup.Session({timeout, user_agent: `gnome-air-raid-map/${VERSION}`,
         max_conns_per_host: MAX_CONNECTIONS_PER_HOST});
+    if (base.startsWith('https://')) {
+        let database = null;
+        try {
+            database = Gio.TlsFileDatabase.new(anchors);
+        } catch (e) {
+            // The default trust store.
+        }
+        if (database) {
+            Gio.TlsBackend.get_default().set_default_database(database);
+            session.set_tls_database(database);
+        }
+    }
+    return session;
 }
 
 // Every failure of getJson. The caller counts it as a failed request (spec 5.4,

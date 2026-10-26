@@ -2,6 +2,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GdkPixbuf from 'gi://GdkPixbuf';
+import System from 'system';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertRejects} from '../lib/assert.js';
 import {removeTree} from '../lib/files.js';
 import {startServer} from '../lib/fixture-server.js';
@@ -545,6 +546,12 @@ test('the picture that picture-uri-dark shows survives a run that draws', () =>
 
 // Runs argv in a new process; env sets its variables (null removes one).
 async function spawn(argv, env) {
+    // GJS 1.80 can refuse the callbacks of the fixture server and of the process while
+    // a garbage collection is in progress, and the test then waits forever (#7). A full
+    // garbage collection here ends a collection that is in progress, so the wait is much
+    // less likely. It does not remove it: a new collection can start while the test
+    // waits. #7 has the data. tests/run.sh stops a file that runs for more than 600 s.
+    System.gc();
     const launcher = new Gio.SubprocessLauncher({
         flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
     });

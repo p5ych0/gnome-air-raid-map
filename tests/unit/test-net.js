@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertDeepEqual, assertTrue} from '../lib/assert.js';
 import {startServer} from '../lib/fixture-server.js';
@@ -72,6 +73,108 @@ test('refused connection is a failed request', async () => {
 
 test('invalid url is a failed request', async () => {
     await assertRequestError(getJson(createSession(), 'not a url'), /^Invalid URL$/);
+});
+
+// The trust store (Task 11b): GnuTLS on Fedora reads it through p11-kit, which costs about
+// 60 ms of CPU in each run. An https session loads the PEM file of the system CAs instead.
+const FIXTURES = GLib.build_filenamev([GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]), 'fixtures']);
+const TEST_CERT = GLib.build_filenamev([FIXTURES, 'test-tls-cert.pem']);
+const SYSTEM_CA_FILE = '/etc/ssl/certs/ca-certificates.crt';
+const NET_URL = GLib.Uri.resolve_relative(import.meta.url, '../../updater/net.js', GLib.UriFlags.NONE);
+const trustStore = () => Gio.TlsBackend.get_default().get_default_database();
+const anchorsOf = db => (db instanceof Gio.TlsFileDatabase ? db.anchors : null);
+
+// An https session changes the default trust store of the process. A test that makes one
+// restores the store, so that no test depends on the tests before it.
+function keepingTrustStore(fn) {
+    const saved = trustStore();
+    try {
+        return fn();
+    } finally {
+        Gio.TlsBackend.get_default().set_default_database(saved);
+    }
+}
+
+test('an https session uses the CA file, also for new connections', () => keepingTrustStore(() => {
+    const session = createSession({base: 'https://neptun.in.ua', anchors: TEST_CERT});
+    assertEqual(anchorsOf(session.get_tls_database()), TEST_CERT);
+    // glib-networking reads the default trust store of the process when it creates a connection.
+    assertEqual(anchorsOf(trustStore()), TEST_CERT, 'the default trust store of the process');
+}));
+
+test('the CA file is the PEM file of the system CAs', () => keepingTrustStore(() => {
+    if (!GLib.file_test(SYSTEM_CA_FILE, GLib.FileTest.EXISTS)) {
+        print(`# skip: no ${SYSTEM_CA_FILE}, so no check of the CA file of an https session`);
+        return;
+    }
+    assertEqual(anchorsOf(createSession({base: 'https://neptun.in.ua'}).get_tls_database()), SYSTEM_CA_FILE);
+}));
+
+test('an http session and a session without a usable CA file keep the trust store', () => {
+    const dir = GLib.dir_make_tmp('air-raid-ca-XXXXXX');
+    const empty = GLib.build_filenamev([dir, 'empty.pem']);
+    try {
+        GLib.file_set_contents(empty, '');
+        const before = trustStore();
+        assertEqual(anchorsOf(before), null, 'an earlier test left a CA file as the default trust store');
+        for (const [base, anchors] of [['http://127.0.0.1:1', TEST_CERT],
+            ['https://neptun.in.ua', GLib.build_filenamev([dir, 'missing.pem'])], ['https://neptun.in.ua', empty]]) {
+            const session = createSession({base, anchors});
+            assertTrue(trustStore() === before && session.get_tls_database() === before, `${base} ${anchors}`);
+        }
+    } finally {
+        GLib.unlink(empty);
+        GLib.rmdir(dir);
+    }
+});
+
+// In a new process: a local TLS server with the test certificate, and one request with
+// the CA file `anchors`. Prints the request result and whether the process loaded the
+// p11-kit trust module (/proc/self/maps). The process has a server and a client in one
+// main loop: on GJS 1.80 such a process can wait forever (#7). So timeout stops it after
+// 30 s. A JS timer in the process is not enough: GJS can refuse JS callbacks during a
+// garbage collection.
+const TLS_PROCESS_LIMIT_S = 30;
+function tlsRequestIn(anchors) {
+    const script = `
+        imports.gi.versions.Soup = '3.0';
+        const {GLib, Gio, Soup} = imports.gi;
+        const server = new Soup.Server({tls_certificate: Gio.TlsCertificate.new_from_file(ARGV[0])});
+        server.add_handler(null, (srv, msg) => {
+            msg.set_status(200, null);
+            msg.set_response('application/json', Soup.MemoryUse.COPY, new TextEncoder().encode('{"ok":true}'));
+        });
+        server.listen_local(0, Soup.ServerListenOptions.HTTPS | Soup.ServerListenOptions.IPV4_ONLY);
+        const base = 'https://127.0.0.1:' + server.get_uris()[0].get_port();
+        const loop = new GLib.MainLoop(null, false);
+        let result;
+        import(ARGV[2]).then(net => net.getJson(net.createSession({base, anchors: ARGV[1]}), base + '/a'))
+            .then(r => { result = {status: r.status, json: r.json}; }, e => { result = {error: e.message}; })
+            .finally(() => loop.quit());
+        loop.run();
+        const maps = new TextDecoder().decode(GLib.file_get_contents('/proc/self/maps')[1]);
+        print(JSON.stringify({...result, p11KitTrust: maps.includes('p11-kit-trust')}));`;
+    const launcher = new Gio.SubprocessLauncher({flags: Gio.SubprocessFlags.STDOUT_PIPE});
+    const process = launcher.spawnv(['timeout', `${TLS_PROCESS_LIMIT_S}`, 'gjs', '-c', script,
+        GLib.build_filenamev([FIXTURES, 'test-tls-server.pem']), anchors, NET_URL]);
+    const [, stdout] = process.communicate_utf8(null, null);
+    // timeout exits 124 when the time limit stops the process.
+    if (process.get_exit_status() === 124)
+        throw new Error(`the TLS process did not finish in ${TLS_PROCESS_LIMIT_S} s`);
+    return JSON.parse(stdout);
+}
+
+test('a TLS request trusts the CA file and does not load the p11-kit trust store', () =>
+    assertDeepEqual(tlsRequestIn(TEST_CERT), {status: 200, json: {ok: true}, p11KitTrust: false}));
+
+test('a TLS request fails for a server that the CA file does not trust', () => {
+    if (!GLib.file_test(SYSTEM_CA_FILE, GLib.FileTest.EXISTS)) {
+        print(`# skip: no ${SYSTEM_CA_FILE}, so no check of a server that it does not trust`);
+        return;
+    }
+    const result = tlsRequestIn(SYSTEM_CA_FILE);
+    assertTrue(/^Network error: .*TLS certificate/.test(result.error), `result ${JSON.stringify(result)}`);
+    assertEqual(result.p11KitTrust, false, 'the p11-kit trust store is loaded');
 });
 
 // One run sends four requests to one host at the same time: two boundary files and two feeds.

@@ -1,0 +1,16 @@
+# The headless GNOME Shell of the test session (tests/gnome/run-systemd.sh). It
+# runs under the user manager of the test user, as GNOME Shell does on a real
+# desktop. Type=notify: Mutter reports READY=1 when the Shell is up, and
+# graphical-session.target starts only after that. session-systemd.sh writes
+# ~/.config/gnome-test-shell.env with GNOME_TEST_SHELL_ARGS (the virtual monitors)
+# and XDG_CURRENT_DESKTOP.
+[Unit]
+Description=Headless GNOME Shell for the tests
+PartOf=gnome-test-session.target
+Before=graphical-session.target
+
+[Service]
+Type=notify
+Environment=XDG_SESSION_TYPE=wayland
+EnvironmentFile=%h/.config/gnome-test-shell.env
+ExecStart=/usr/bin/gnome-shell --headless --wayland --no-x11 --unsafe-mode $GNOME_TEST_SHELL_ARGS

@@ -303,14 +303,45 @@ export function drawMonitor(cr, rect, geometry, view) {
     }
 }
 
+const overlap = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+// For each monitor: {rect, copyOf}. copyOf is an earlier monitor with the same size and
+// scale, or null. Such a monitor shows the same pixels, at another whole-pixel offset, so
+// the picture gets a copy: a map at 3840x2160 costs about 110 ms of CPU, a copy about 5 ms
+// (Task 11b). If two monitors overlap, each monitor is drawn.
+export function monitorPlan(monitors) {
+    const apart = monitors.every((a, i) => monitors.every((b, j) => i === j || !overlap(a, b)));
+    const drawn = [];
+    return monitors.map(rect => {
+        const copyOf = apart ? drawn.find(d => d.width === rect.width && d.height === rect.height &&
+            d.scale === rect.scale) ?? null : null;
+        if (!copyOf) drawn.push(rect);
+        return {rect, copyOf};
+    });
+}
+
 export function renderPicture(layout, geometry, view) {
     const surface = new Cairo.ImageSurface(Cairo.Format.RGB24, layout.width, layout.height);
     const cr = new Cairo.Context(surface);
     try {
         setColor(cr, BACKGROUND);
         cr.paint();
-        for (const rect of layout.monitors)
-            drawMonitor(cr, rect, geometry, view);
+        for (const {rect, copyOf} of monitorPlan(layout.monitors)) {
+            if (!copyOf) {
+                drawMonitor(cr, rect, geometry, view);
+                continue;
+            }
+            cr.save();
+            cr.setOperator(Cairo.Operator.SOURCE);
+            // The source and the target are the same surface. Cairo does not define
+            // this in general. It is defined here because the copied rectangle and the
+            // target rectangle never overlap (apart). The pixel tests compare each copy
+            // with a monitor drawn alone.
+            cr.setSourceSurface(surface, rect.x - copyOf.x, rect.y - copyOf.y);
+            cr.rectangle(rect.x, rect.y, rect.width, rect.height);
+            cr.fill();
+            cr.restore();
+        }
     } finally {
         cr.$dispose();
     }

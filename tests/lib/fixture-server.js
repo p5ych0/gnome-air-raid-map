@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Local HTTP server for tests. As a script:
 //   gjs -m tests/lib/fixture-server.js <port> <dir>
+// The script serves the files of <dir> at the NEPTUN paths. It also has the same
+// paths under /hang (example: /hang/api/v1/alerts) that do not answer for one day:
+// with the API base http://127.0.0.1:<port>/hang, every request of a run waits.
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Soup from 'gi://Soup?version=3.0';
@@ -108,13 +111,13 @@ function readFile(path) {
     return GLib.file_get_contents(path)[1];
 }
 
+const ONE_DAY_MS = 86400000;
+
 function serveDirectory(port, dir) {
     const file = name => GLib.build_filenamev([dir, name]);
     let flip = false;
     requestedPort = port;
-    // Keep the handle until the loop ends: without a reference, the garbage
-    // collector frees the Soup.Server, and the port closes after some requests.
-    const server = startServer({
+    const routes = {
         '/oblasts.geojson': () => ({body: readFile(file('oblasts.geojson'))}),
         '/raions.geojson': () => ({body: readFile(file('raions.geojson'))}),
         '/api/v1/threats': () => ({body: readFile(file('threats.json'))}),
@@ -122,7 +125,12 @@ function serveDirectory(port, dir) {
             flip = !flip;
             return {body: readFile(file(flip ? 'alerts-a.json' : 'alerts-b.json'))};
         },
-    });
+    };
+    for (const path of Object.keys(routes))
+        routes[`/hang${path}`] = {status: 504, delayMs: ONE_DAY_MS};
+    // Keep the handle until the loop ends: without a reference, the garbage
+    // collector frees the Soup.Server, and the port closes after some requests.
+    const server = startServer(routes);
     GLib.MainLoop.new(null, false).run();
     server.stop();
 }

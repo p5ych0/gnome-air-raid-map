@@ -4,8 +4,9 @@ import {pixelAt, pixelReader, assertColorNear} from '../lib/pixels.js';
 import {syntheticGeometry, syntheticThreats, syntheticView} from '../lib/fixtures.js';
 import {project, prepareGeometry, parseSnapshot, parseThreats} from '../../core/mapdata.js';
 import {pictureLayout, parseDisplayOverride} from '../../core/layout.js';
-import {mapTransform, toScreen, visibleThreats, areaListLimit, areaListPlan, areaItemText, renderPicture}
-    from '../../core/render.js';
+import Cairo from 'cairo';
+import {mapTransform, toScreen, visibleThreats, areaListLimit, areaListPlan, areaItemText, renderPicture,
+    drawMonitor, monitorPlan} from '../../core/render.js';
 
 const L1080 = pictureLayout(parseDisplayOverride('1920x1080@1'));
 const bounds = syntheticGeometry().oblasts.bounds;
@@ -111,6 +112,59 @@ test('each monitor gets its own map', () => {
         const [x, y] = screen(own, INSIDE, rect);
         assertColorNear(read(x, y), '#cf4655');
     }
+});
+
+// A monitor with the size and scale of an earlier monitor gets a copy of its pixels (Task 11b).
+const copies = display => monitorPlan(pictureLayout(parseDisplayOverride(display)).monitors)
+    .map(({copyOf}, i, plan) => (copyOf ? plan.findIndex(entry => entry.rect === copyOf) : -1));
+
+test('a monitor with the size and scale of an earlier monitor copies it', () => {
+    assertDeepEqual(copies('3840x2160@1,3840x2160@1'), [-1, 0]);
+    assertDeepEqual(copies('1920x1080@1,1920x1080@1,1920x1080@1'), [-1, 0, 0]);
+    // At the size cap the widths are 3136, 3137 and 3136 pixels.
+    assertDeepEqual(copies('3840x2160@1,3840x2160@1,3840x2160@1'), [-1, -1, 0]);
+    assertDeepEqual(copies('1920x1080@1,2560x1440@1'), [-1, -1]);
+    assertDeepEqual(copies('1920x1080@1,1080x1920@1'), [-1, -1]);
+});
+
+test('overlapping monitors are all drawn', () => {
+    const monitors = [0, 50, 200].map(x => ({x, y: 0, width: 100, height: 100, scale: 1}));
+    assertDeepEqual(monitorPlan(monitors).map(entry => entry.copyOf), [null, null, null]);
+});
+
+// The pixels of monitor index in the picture that differ from the same monitor drawn on its own.
+function differFromAlone(layout, index) {
+    const view = syntheticView({alerts: redAlert()});
+    const drawn = renderPicture(layout, syntheticGeometry(), view);
+    const picture = pixelReader(drawn);
+    drawn.finish();
+    const rect = layout.monitors[index];
+    const surface = new Cairo.ImageSurface(Cairo.Format.RGB24, layout.width, layout.height);
+    const cr = new Cairo.Context(surface);
+    drawMonitor(cr, rect, syntheticGeometry(), view);
+    cr.$dispose();
+    const alone = pixelReader(surface);
+    surface.finish();
+    let differ = 0;
+    for (let y = rect.y; y < rect.y + rect.height; ++y)
+        for (let x = rect.x; x < rect.x + rect.width; ++x)
+            if (picture(x, y).some((v, i) => v !== alone(x, y)[i])) ++differ;
+    return differ;
+}
+
+test('a copied monitor has the pixels of a drawn monitor', () => {
+    const layout = pictureLayout(parseDisplayOverride('640x360@1,800x450@1,640x360@1'));
+    assertEqual(differFromAlone(layout, 2), 0, 'pixels that differ');
+});
+
+test('a copied monitor at a scale that is not a whole number has the pixels of a drawn monitor', () => {
+    // A cap of 1290240 pixels scales the picture by 0.8367, as the size cap does for large
+    // layouts. Each monitor then has 1071x602 pixels.
+    const layout = pictureLayout(parseDisplayOverride('1280x720@1,1280x720@1'), 1290240);
+    assertDeepEqual(layout.monitors.map(({x, width, height}) => [x, width, height]), [[0, 1071, 602], [1071, 1071, 602]]);
+    assertTrue(!Number.isInteger(layout.monitors[1].scale), `scale ${layout.monitors[1].scale}`);
+    assertDeepEqual(monitorPlan(layout.monitors).map(entry => entry.copyOf), [null, layout.monitors[0]]);
+    assertEqual(differFromAlone(layout, 1), 0, 'pixels that differ');
 });
 
 test('scale 2 draws the logical layout at twice the size', () => {

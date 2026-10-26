@@ -1,0 +1,20 @@
+# Fedora 44 with systemd as PID 1, for tests/gnome/run-systemd.sh (plan Task 11).
+# The first RUN line is the same as in Containerfile.fedora44, so the build reuses
+# that layer. The second adds the systemd user manager: systemd-pam has the
+# systemd-user PAM file and pam_systemd, which give user@.service its
+# XDG_RUNTIME_DIR. The test user "tester" has linger, so its user manager starts
+# at boot. /var/log/journal makes the journal persistent: only a persistent
+# journal has one file for each user, which "journalctl --user" reads.
+# gdm is masked: the test session is started by run-systemd.sh.
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install --setopt=install_weak_deps=False \
+      gnome-shell gjs libsoup3 pango cairo-gobject gsettings-desktop-schemas \
+      dbus-daemon glib2 mesa-dri-drivers mesa-libEGL google-noto-sans-fonts \
+    && dnf clean all
+RUN dnf -y install --setopt=install_weak_deps=False systemd systemd-pam procps-ng \
+    && dnf clean all \
+    && systemctl mask gdm.service \
+    && systemctl set-default multi-user.target \
+    && useradd -m -u 2000 -s /bin/bash tester \
+    && mkdir -p /var/lib/systemd/linger /var/log/journal \
+    && touch /var/lib/systemd/linger/tester
