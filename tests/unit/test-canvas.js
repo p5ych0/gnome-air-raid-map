@@ -77,9 +77,10 @@ test('center aligned text is centered', () => {
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#ffffff';
     ctx.fillText('Ж', 100, 20);
+    const read = pixelReader(surface);
     const bright = [];
     for (let x = 0; x < 200; ++x)
-        if (pixelAt(surface, x, 20)[0] > 200) bright.push(x);
+        if (read(x, 20)[0] > 200) bright.push(x);
     assertTrue(bright.some(x => x >= 92 && x <= 108), 'no white pixel near the center');
     assertTrue(bright.every(x => x >= 80 && x <= 120), 'text is not centered');
     cr.$dispose();
@@ -129,10 +130,11 @@ test('stroke text draws an outline', () => {
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 3;
     ctx.strokeText('Ж', 30, 15);
+    const read = pixelReader(surface);
     let found = false;
     for (let x = 15; x < 45 && !found; ++x)
         for (let y = 5; y < 25 && !found; ++y)
-            if (pixelAt(surface, x, y)[0] > 200) found = true;
+            if (read(x, y)[0] > 200) found = true;
     assertTrue(found, 'no stroked pixels');
     cr.$dispose();
 });

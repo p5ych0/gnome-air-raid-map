@@ -4,12 +4,12 @@
 // The script serves the files of <dir> at the NEPTUN paths. It also has the same
 // paths under /hang (example: /hang/api/v1/alerts) that do not answer for one day:
 // with the API base http://127.0.0.1:<port>/hang, every request of a run waits.
-import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Soup from 'gi://Soup?version=3.0';
 import System from 'system';
 
-export function startServer(routes) {
+// port 0 lets the system choose a free port.
+export function startServer(routes, {port = 0} = {}) {
     const table = new Map(Object.entries(routes));
     const hits = new Map();
     // 304 answers to a matching If-None-Match, per path.
@@ -56,7 +56,6 @@ export function startServer(routes) {
             return GLib.SOURCE_REMOVE;
         });
     });
-    const port = arguments_port();
     server.listen_local(port, Soup.ServerListenOptions.IPV4_ONLY);
     const uri = server.get_uris()[0];
     return {
@@ -100,13 +99,6 @@ function drip(msg, status, bytes, dripMs) {
     });
 }
 
-let requestedPort = 0;
-function arguments_port() {
-    const p = requestedPort;
-    requestedPort = 0;
-    return p;
-}
-
 function readFile(path) {
     return GLib.file_get_contents(path)[1];
 }
@@ -116,7 +108,6 @@ const ONE_DAY_MS = 86400000;
 function serveDirectory(port, dir) {
     const file = name => GLib.build_filenamev([dir, name]);
     let flip = false;
-    requestedPort = port;
     const routes = {
         '/oblasts.geojson': () => ({body: readFile(file('oblasts.geojson'))}),
         '/raions.geojson': () => ({body: readFile(file('raions.geojson'))}),
@@ -130,7 +121,7 @@ function serveDirectory(port, dir) {
         routes[`/hang${path}`] = {status: 504, delayMs: ONE_DAY_MS};
     // Keep the handle until the loop ends: without a reference, the garbage
     // collector frees the Soup.Server, and the port closes after some requests.
-    const server = startServer(routes);
+    const server = startServer(routes, {port});
     GLib.MainLoop.new(null, false).run();
     server.stop();
 }
