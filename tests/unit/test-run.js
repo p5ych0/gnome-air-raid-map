@@ -284,6 +284,21 @@ for (const [name, route] of [
     }, {...routes(), '/oblasts.geojson': route}));
 }
 
+// A full or read-only cache folder (#2, #6): the download is valid, so the picture
+// shows the map, not the loading message. A cache folder that is a file makes every
+// write fail, also for root.
+test('a cache that cannot be written still draws the map', () => withRun(async ({dir, paths, once}) => {
+    GLib.mkdir_with_parents(`${dir}/cache`, 0o700);
+    GLib.file_set_contents(paths.cacheDir, 'not a folder');
+    const result = await once();
+    assertEqual(result.drew, true);
+    const read = readPicture(result.uri);
+    assertColorNear(read(...INSIDE), '#cf4655');
+    assertTrue(!hasLoadingMessage(read), 'the loading message is drawn');
+    assertTrue(result.warnings.length === 2 && result.warnings.every(w => w.startsWith('boundary cache: ')),
+        `warnings: ${JSON.stringify(result.warnings)}`);
+}));
+
 test('boundaries come back after an outage', () => withRun(async ({server, once}) => {
     const loading = await once();
     assertTrue(hasLoadingMessage(readPicture(loading.uri)), 'no loading message');

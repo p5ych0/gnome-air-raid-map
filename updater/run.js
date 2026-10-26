@@ -137,6 +137,7 @@ export async function runOnce({session, settings, display, paths, now, base,
     const geometry = loaded ? boundaries.value.geometry : null;
     const geometryVersion = loaded ? boundaries.value.version : null;
     if (!loaded) warnings.push(`boundaries: ${messageOf(boundaries.reason)}`);
+    else for (const warning of boundaries.value.warnings) warnings.push(`boundary cache: ${warning}`);
     const alerts = applyResponse(state.alerts, alertsResponse,
         payload => acceptAlerts(state.alerts, payload, geometry, now));
     const threats = applyResponse(state.threats, threatsResponse,

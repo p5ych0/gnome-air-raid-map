@@ -218,6 +218,70 @@ test('metadata entries hold only the etag and the check time', () => withFixture
     });
 }));
 
+// An invalid 200 answer keeps the valid cache. The check time moves to now, so the
+// next run within MAX_CACHE_AGE_MS does not download again (#2).
+for (const [name, body] of [
+    ['invalid boundaries', JSON.stringify({a: 1})],
+    ['a body that is not JSON', '<html>not JSON</html>'],
+]) {
+    test(`${name} in a 200 answer renew the check time of the cache`, () =>
+        withFixture(async ({server, dir, session}) => {
+            await loadGeometry(session, server.base, dir, 1000000);
+            server.setRoute('/oblasts.geojson', {body});
+            const later = 1000000 + 3600001;
+            const result = await loadGeometry(session, server.base, dir, later);
+            assertEqual(server.hits.get('/oblasts.geojson'), 2);
+            assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+            assertEqual(result.version, version());
+            assertDeepEqual(readJson(path(dir, 'geometry.json'), null).oblasts, {etag: '"o1"', checkedAt: later});
+            await loadGeometry(session, server.base, dir, later + 60000);
+            assertEqual(server.hits.get('/oblasts.geojson'), 2, 'the next load requests again');
+        }));
+}
+
+// A full or read-only cache folder. A cache folder that is a file makes every
+// write fail, also for root (the GNOME images run the tests as root).
+test('a cache that cannot be written returns the download and warns', () =>
+    withFixture(async ({server, dir, session}) => {
+        const cacheDir = path(dir, 'cache');
+        GLib.file_set_contents(cacheDir, 'not a folder');
+        const result = await loadGeometry(session, server.base, cacheDir, 1000000);
+        assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+        assertEqual(result.geometry.raions.regions[0].key, 'r1');
+        assertEqual(result.version, version());
+        assertEqual(result.warnings.length, 2, JSON.stringify(result.warnings));
+        assertTrue(result.warnings[0].includes('oblasts.geojson'), result.warnings[0]);
+        assertTrue(result.warnings[1].includes('raions.geojson'), result.warnings[1]);
+    }));
+
+// The metadata must describe the file on disk. If the new file cannot be written,
+// the metadata must not record its ETag: a later 304 would then keep old content.
+test('a boundary file that cannot be written gets no new metadata entry', () =>
+    withFixture(async ({server, dir, session}) => {
+        // A folder in place of the file makes its write fail.
+        GLib.mkdir_with_parents(path(dir, 'oblasts.geojson'), 0o700);
+        const result = await loadGeometry(session, server.base, dir, 1000000);
+        assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
+        assertEqual(result.warnings.length, 1, JSON.stringify(result.warnings));
+        assertDeepEqual(readJson(path(dir, 'geometry.json'), null), {
+            oblasts: {etag: '', checkedAt: 0},
+            raions: {etag: '"r1"', checkedAt: 1000000},
+        });
+    }));
+
+test('a metadata file that cannot be written is a warning', () => withFixture(async ({server, dir, session}) => {
+    GLib.mkdir_with_parents(path(dir, 'geometry.json'), 0o700);
+    const result = await loadGeometry(session, server.base, dir, 1000000);
+    assertEqual(result.version, version());
+    assertEqual(result.warnings.length, 1, JSON.stringify(result.warnings));
+    assertTrue(result.warnings[0].includes('geometry.json'), result.warnings[0]);
+}));
+
+test('a load with a writable cache has no warnings', () => withFixture(async ({server, dir, session}) => {
+    const result = await loadGeometry(session, server.base, dir, 1000000);
+    assertDeepEqual(result.warnings, []);
+}));
+
 test('offline without cache rejects', () => withFixture(async ({server, dir, session}) => {
     server.stop();
     await assertRejects(loadGeometry(session, server.base, dir, 1000000));

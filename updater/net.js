@@ -47,11 +47,13 @@ export function createSession({timeout = 15, base = '', anchors = SYSTEM_CA_FILE
 }
 
 // Every failure of getJson. The caller counts it as a failed request (spec 5.4,
-// step 4), not as a run error.
+// step 4), not as a run error. status is the HTTP status of the answer, or 0 if
+// no answer came.
 export class RequestError extends Error {
-    constructor(message) {
+    constructor(message, status = 0) {
         super(message);
         this.name = 'RequestError';
+        this.status = status;
     }
 }
 
@@ -80,13 +82,13 @@ export async function getJson(session, url, {etag = null, deadlineMs = 15000} = 
     }
     const status = msg.get_status();
     if (status === 304) return {status: 304};
-    if (status !== 200) throw new RequestError(`HTTP ${status}`);
+    if (status !== 200) throw new RequestError(`HTTP ${status}`, status);
     const responseEtag = msg.get_response_headers().get_one('ETag');
     let json;
     try {
         json = JSON.parse(new TextDecoder().decode(bytes.toArray()));
     } catch (e) {
-        throw new RequestError('Invalid JSON');
+        throw new RequestError('Invalid JSON', status);
     }
     return {status: 200, json, etag: responseEtag};
 }
