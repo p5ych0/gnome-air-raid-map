@@ -7,10 +7,15 @@ set -euo pipefail
 
 APP=gnome-air-raid-map
 SOURCE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-APPDIR=${XDG_DATA_HOME:-$HOME/.local/share}/$APP
+# The XDG folders of this shell. The service unit gets the same values: the systemd
+# user manager does not read a shell profile, so it can have other values.
+DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+APPDIR=$DATA_HOME/$APP
 UNITDIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
-STATEDIR=${XDG_STATE_HOME:-$HOME/.local/state}/$APP
-CACHEDIR=${XDG_CACHE_HOME:-$HOME/.cache}/$APP
+STATEDIR=$STATE_HOME/$APP
+CACHEDIR=$CACHE_HOME/$APP
 SAVED=$STATEDIR/previous-wallpaper
 # The folders of the pictures of the program: the banner, and the live map.
 PICTURE_FOLDERS=("$APPDIR")
@@ -167,6 +172,9 @@ install_app() {
     systemctl --user show-environment > /dev/null ||
         die "no systemd user session: systemctl --user does not answer"
     check_unit_value "$APPDIR"
+    check_unit_value "$DATA_HOME"
+    check_unit_value "$STATE_HOME"
+    check_unit_value "$CACHE_HOME"
     banner_uri=$("$gjs" -c 'print(imports.gi.Gio.File.new_for_path(ARGV[0]).get_uri())' "$APPDIR/banner.png")
 
     # 1. The program. Build it in NEW, and swap it in with renames. Until the swap,
@@ -214,7 +222,8 @@ install_app() {
     for unit in "$SOURCE"/systemd/*; do
         name=$(basename "${unit%.in}")
         sed -e "s|@GJS@|$gjs|g" -e "s|@GSETTINGS@|$gsettings|g" -e "s|@APPDIR@|$APPDIR|g" \
-            -e "s|@BANNER_URI@|${banner_uri//%/%%}|g" "$unit" > "$UNITDIR/$name"
+            -e "s|@BANNER_URI@|${banner_uri//%/%%}|g" -e "s|@XDG_DATA_HOME@|$DATA_HOME|g" \
+            -e "s|@XDG_STATE_HOME@|$STATE_HOME|g" -e "s|@XDG_CACHE_HOME@|$CACHE_HOME|g" "$unit" > "$UNITDIR/$name"
         if grep -q '@[A-Z_]*@' "$UNITDIR/$name"; then
             die "a value in $UNITDIR/$name is not replaced"
         fi

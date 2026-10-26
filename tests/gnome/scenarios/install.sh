@@ -32,7 +32,10 @@
 # moves the old program back and starts the timer; 19 leave the old program in
 # $APPDIR.old and a complete $APPDIR.new with $APPDIR absent, as a SIGKILL between the
 # two renames does, and make the copy of the next install fail: the old program is
-# moved back first, and the failure script does not run.
+# moved back first, and the failure script does not run; 20 install with XDG folders
+# that only the shell of the installer has, as from a shell profile: the service unit
+# sets them, a run of the service writes its cache there, and the uninstall from the
+# same shell deletes the folders of the program there.
 # Step 8 also checks that the uninstall deletes the staging folders.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
@@ -184,6 +187,16 @@ no_placeholders() {
     ! grep -n '@[A-Z_]*@' "${UNITS[@]/#/$UNITDIR/}"
 }
 
+# has_lines <file> <line ...>: the file has each line.
+has_lines() {
+    local file=$1 line result=0
+    shift
+    for line; do
+        grep -qxF -- "$line" "$file" || { echo "#   missing line: $line"; result=1; }
+    done
+    return $result
+}
+
 # png_size <file> <width> <height>
 png_size() {
     local size
@@ -233,16 +246,19 @@ with_gsettings_stub() {
 # goes to <name>.stdout and <name>.stderr. eval splits the line at spaces and removes
 # the quotes, as systemd does; the lines come from the units that install.sh wrote
 # from systemd/*.in in this disposable container. With <gsettings>, the lines use
-# that program in place of the gsettings path in the unit.
+# that program in place of the gsettings path in the unit. env adds the variables of
+# the Environment= lines, as systemd does; install.sh writes only values without
+# spaces or quotes (check_unit_value).
 run_unit() {
-    local line code=0
+    local line code=0 variables
     : > "$OUT/$2.stdout"
     : > "$OUT/$2.stderr"
+    variables=$(sed -n 's/^Environment=//p' "$UNITDIR/$1" | tr '\n' ' ')
     while IFS= read -r line; do
         line=${line//%%/%}
         echo "#   ExecStart=$line"
         [ -z "${3:-}" ] || line=${line//"$GSETTINGS"/"$3"}
-        eval "timeout 25 $line" < /dev/null >> "$OUT/$2.stdout" 2>> "$OUT/$2.stderr" || {
+        eval "timeout 25 env $variables $line" < /dev/null >> "$OUT/$2.stdout" 2>> "$OUT/$2.stderr" || {
             code=$?
             break
         }
@@ -348,7 +364,7 @@ check "step 1: the known wallpaper is set" keys_are "${KNOWN[@]}"
 check "step 2: install.sh exits 0" install_run install-1
 check "step 3: the three units exist" all_exist "${UNITS[@]/#/$UNITDIR/}"
 check "step 3: no @...@ value is left in the units" no_placeholders
-sed 's/^/#   /' "$UNITDIR/$APP.service" "$UNITDIR/$APP-failed.service" | grep -E '^#   (ExecStart|OnFailure|SuccessExitStatus|Memory[A-Za-z]*)='
+sed 's/^/#   /' "$UNITDIR/$APP.service" "$UNITDIR/$APP-failed.service" | grep -E '^#   (Environment|ExecStart|OnFailure|SuccessExitStatus|Memory[A-Za-z]*)='
 check "step 3: a stop of the service (SIGTERM) is a clean exit, not a failure" \
     grep -qx 'SuccessExitStatus=SIGTERM' "$UNITDIR/$APP.service"
 check "step 3: the service may not use swap, so MemoryMax=300M is a hard limit" \
@@ -772,6 +788,30 @@ check "step 19: the old program is intact, so the failure script did not run" \
     not grep -q '^gsettings set ' "$OUT/calls.log"
 check "step 19: the service still runs and sets the live picture" run_unit "$APP.service" service-9
 check "step 19: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
+
+# Step 20: XDG folders that only the shell of the installer has (#6). The systemd user
+# manager does not have them, so the service must get them from its unit. run_unit
+# runs the service without them, as the manager does. Step 19 left the program in the
+# default folders: uninstall it first.
+check "step 20: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall-5 --uninstall
+XDG20=/tmp/step-20
+# with_xdg <command ...>: runs the command with the XDG folders of step 20.
+with_xdg() {
+    XDG_CACHE_HOME=$XDG20/cache XDG_STATE_HOME=$XDG20/state XDG_DATA_HOME=$XDG20/data "$@"
+}
+check "step 20: install.sh with the XDG folders of the shell exits 0" with_xdg install_run install-21
+check "step 20: the service unit sets the three XDG folders of the installer" has_lines "$UNITDIR/$APP.service" \
+    "Environment=XDG_CACHE_HOME=$XDG20/cache" "Environment=XDG_STATE_HOME=$XDG20/state" \
+    "Environment=XDG_DATA_HOME=$XDG20/data"
+check "step 20: no @...@ value is left in the units" no_placeholders
+check "step 20: the service runs without the XDG folders in its environment" run_unit "$APP.service" service-10
+check "step 20: the run wrote its cache under the XDG_CACHE_HOME of the installer" \
+    all_exist "$XDG20/cache/$APP/oblasts.geojson" "$XDG20/cache/$APP/raions.geojson" "$XDG20/cache/$APP/geometry.json"
+check "step 20: the run wrote no cache in the default folder" none_exist "$CACHEDIR"
+check "step 20: install.sh --uninstall from the same shell exits 0" \
+    with_gsettings_stub with_xdg install_run uninstall-6 --uninstall
+check "step 20: the program, cache, state and runtime folders are gone" \
+    none_exist "$XDG20/data/$APP" "$XDG20/cache/$APP" "$XDG20/state/$APP" "$RUNDIR"
 
 echo "# install: $status (0: every check passed)"
 exit $status

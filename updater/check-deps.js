@@ -10,15 +10,16 @@ import System from 'system';
 
 const SCHEMA = 'org.gnome.desktop.background';
 
-// The packages for each distribution family: [Fedora, Debian and Ubuntu].
-const CHECKS = [
+// The packages for each distribution family: [Fedora, Debian and Ubuntu]. Each
+// package must have the file that the check loads (tests/unit/test-check-deps.js).
+export const CHECKS = [
     {name: 'Soup 3.0', packages: ['libsoup3', 'gir1.2-soup-3.0'],
         load: () => import('gi://Soup?version=3.0')},
     {name: 'Pango', packages: ['pango', 'gir1.2-pango-1.0'],
         load: () => import('gi://Pango')},
     {name: 'PangoCairo', packages: ['pango', 'gir1.2-pango-1.0'],
         load: () => import('gi://PangoCairo')},
-    {name: 'cairo', packages: ['cairo-gobject', 'gir1.2-freedesktop'],
+    {name: 'cairo', packages: ['gobject-introspection', 'gir1.2-freedesktop'],
         load: async () => {
             const {default: Cairo} = await import('cairo');
             new Cairo.ImageSurface(Cairo.Format.RGB24, 1, 1).finish();
@@ -65,13 +66,16 @@ async function main() {
     return missing === 0 ? 0 : 1;
 }
 
-// A dynamic import completes in the GLib main loop.
-const loop = GLib.MainLoop.new(null, false);
-let status = 1;
-main().then(code => {
-    status = code;
-}, e => {
-    printerr(`gnome-air-raid-map: the dependency check failed: ${e}`);
-}).finally(() => loop.quit());
-loop.run();
-System.exit(status);
+// The check runs only as a script: a test imports CHECKS.
+if (GLib.path_get_basename(System.programInvocationName) === 'check-deps.js') {
+    // A dynamic import completes in the GLib main loop.
+    const loop = GLib.MainLoop.new(null, false);
+    let status = 1;
+    main().then(code => {
+        status = code;
+    }, e => {
+        printerr(`gnome-air-raid-map: the dependency check failed: ${e}`);
+    }).finally(() => loop.quit());
+    loop.run();
+    System.exit(status);
+}

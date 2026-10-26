@@ -43,13 +43,13 @@ and stops.
 | `systemctl` | `systemd` | `systemd` |
 | libsoup 3 | `libsoup3` | `gir1.2-soup-3.0` |
 | Pango and PangoCairo | `pango` | `gir1.2-pango-1.0` |
-| Cairo | `cairo-gobject` | `gir1.2-freedesktop` |
+| Cairo | `gobject-introspection` | `gir1.2-freedesktop` |
 | The settings schema `org.gnome.desktop.background` | `gsettings-desktop-schemas` | `gsettings-desktop-schemas` |
 
 To install these packages and the CA certificates on Fedora:
 
 ```sh
-sudo dnf install gjs glib2 libsoup3 pango cairo-gobject gsettings-desktop-schemas ca-certificates
+sudo dnf install gjs glib2 libsoup3 pango gobject-introspection gsettings-desktop-schemas ca-certificates
 ```
 
 To install these packages and the CA certificates on Debian and Ubuntu:
@@ -116,7 +116,11 @@ picture, or the settings of other users.
 | `$XDG_RUNTIME_DIR/gnome-air-raid-map/` | Updater | The wallpaper picture and the state file. This folder is in RAM, and the system deletes it at logout. |
 
 These paths are the defaults. If you set `XDG_DATA_HOME`, `XDG_CONFIG_HOME`,
-`XDG_STATE_HOME`, or `XDG_CACHE_HOME`, the program uses those folders.
+`XDG_STATE_HOME`, or `XDG_CACHE_HOME`, the program uses those folders. The
+installer reads them in the shell that runs it. It writes `XDG_DATA_HOME`,
+`XDG_STATE_HOME`, and `XDG_CACHE_HOME` into the service unit, so the updater
+uses the same folders, also when the systemd user manager has other values.
+Run the uninstall from a shell with the same values.
 
 The installer enables the timer for `graphical-session.target`. The updater
 sets these keys of `org.gnome.desktop.background`:

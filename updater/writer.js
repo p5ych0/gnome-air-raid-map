@@ -49,8 +49,18 @@ function modifiedTime(path) {
 // update (Task 11: about 30 KB per run). The picture is in RAM so that repeated
 // writes do not wear the disk (spec 5.5).
 export function renameFile(from, to) {
-    if (GLib.rename(from, to) !== 0)
-        throw new Error(`Cannot rename ${from} to ${to}`);
+    if (GLib.rename(from, to) === 0) return;
+    // GJS gives no errno after GLib.rename, so check the usual causes.
+    const folder = GLib.path_get_dirname(to);
+    let reason = '';
+    if (!GLib.file_test(from, GLib.FileTest.EXISTS | GLib.FileTest.IS_SYMLINK))
+        reason = 'the source is missing';
+    else if (!GLib.file_test(folder, GLib.FileTest.IS_DIR))
+        reason = 'the target folder is missing';
+    // W_OK | X_OK: rename(2) must write in the folder and search it.
+    else if (GLib.access(folder, 2 | 1) !== 0)
+        reason = 'the target folder is not writable';
+    throw new Error(`Cannot rename ${from} to ${to}${reason ? `: ${reason}` : ''}`);
 }
 
 // Deletes the file at path. A missing file is not an error.
@@ -75,7 +85,8 @@ export function writePicture(surface, dir, method, name = PICTURE) {
         if (name === '' || name.includes('/'))
             throw new Error(`Not a file name: ${name}`);
         const absDir = Gio.File.new_for_path(dir).get_path();
-        if (GLib.mkdir_with_parents(absDir, 0o755) !== 0)
+        // Only the user can list the runtime folder.
+        if (GLib.mkdir_with_parents(absDir, 0o700) !== 0)
             throw new Error(`Cannot create the folder ${absDir}`);
         if (method === 'alternate') {
             const path = nextAlternate(absDir);

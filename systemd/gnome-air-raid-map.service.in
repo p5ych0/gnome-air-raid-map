@@ -5,6 +5,11 @@ OnFailure=gnome-air-raid-map-failed.service
 
 [Service]
 Type=oneshot
+# The XDG folders of the shell that ran install.sh. The systemd user manager can have
+# other values, and the uninstall deletes the folders of the shell.
+Environment=XDG_CACHE_HOME=@XDG_CACHE_HOME@
+Environment=XDG_STATE_HOME=@XDG_STATE_HOME@
+Environment=XDG_DATA_HOME=@XDG_DATA_HOME@
 ExecStart=@GJS@ -m @APPDIR@/updater/main.js
 MemoryMax=300M
 # No swap: with swap on, the kernel moves memory above MemoryMax to swap and the run continues.

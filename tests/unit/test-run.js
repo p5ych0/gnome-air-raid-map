@@ -135,6 +135,13 @@ test('first run draws and sets the wallpaper', () => withRun(async ({paths, sett
     assertTrue(typeof state.renderKey === 'string' && state.renderKey.length > 0, 'no render key');
 }));
 
+// The first run makes the runtime folder. Only the user can list it (#6).
+test('the runtime folder has mode 0700', () => withRun(async ({paths, once}) => {
+    await once();
+    const info = Gio.File.new_for_path(paths.runtimeDir).query_info('unix::mode', Gio.FileQueryInfoFlags.NONE, null);
+    assertEqual((info.get_attribute_uint32('unix::mode') & 0o777).toString(8), '700');
+}));
+
 test('same minute same data does not draw', () => withRun(async ({once}) => {
     const first = await once();
     const second = await once({now: now + 20000});
