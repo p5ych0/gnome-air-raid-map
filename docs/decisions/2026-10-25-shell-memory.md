@@ -20,7 +20,9 @@ The owner decided on 2026-10-25:
    decides.
 4. **We record the plateau and the deadlock risk** in this record, in the
    spec, and in the README.
-5. **The 24-hour soak runs again with the new check.**
+5. **The 24-hour soak runs again with the new check.** It ran on
+   2026-10-25 and 2026-10-26, and all checks passed. See "The second
+   soak".
 
 Units in this record:
 
@@ -248,6 +250,62 @@ The limit of the rule: for a steady leak, the two largest values are about
 12 h apart. So the rule finds a leak of more than about 2 units in 12 h.
 With about 103 picture changes per hour in mode A, that is about 13 KB for
 each picture change.
+
+## The second soak
+
+The second 24-hour soak ran from 2026-10-25 14:18 UTC to 2026-10-26
+14:19 UTC. The setup was the same as in the first soak: three sessions and
+the real timer against NEPTUN.
+
+- The soak used the sampler and the probe of commit `3c52fa4`: three
+  proven GCs, then `malloc_trim(0)`, with the retries after an updater
+  overlap.
+- The summary of commit `9dedc60` judged the soak, with the check of the
+  probe coverage:
+  `gjs -m tests/leak/summarize.js --soak --expect 86400 <folder>`.
+- Commit `01da13c`, before `3c52fa4`, removed the prepared boundaries. So
+  the soak measured the current code of the updater.
+
+Result: all checks passed, and the summary exited 0.
+
+| | Mode A | Mode B |
+|---|---:|---:|
+| Updater runs (all exit 0), of 2,880 possible | 2,858 (99.2 %) | 2,858 (99.2 %) |
+| Runs with the failure banner | 0 | 0 |
+| MemoryPeak of a run, mean (max) | 37.2 MB (40.6 MB) | 36.0 MB (40.7 MB) |
+| MemoryPeak trend per 100 runs, share of the mean | -0.056 % | -0.086 % |
+| CPU time of the runs, share of one core | 0.758 % | 0.706 % |
+| CPU time of one run, max | 0.42 s | 0.42 s |
+| CPU that the updater adds to the Shell service with its children | 0.511 % | 0.444 % |
+| CPU that the updater adds to `gnome-shell` alone | 0.420 % | 0.365 % |
+| Good GC probes: 3 proven GCs, a good trim, no overlap | 23 of 23 | 23 of 23 |
+
+- The limit of the MemoryPeak trend is 1 % of the mean. The limit of the
+  CPU of the runs and of the CPU added to the Shell service is 1 % of one
+  core.
+- The control also had 23 good probes of 23. In all three sessions, the
+  probes covered the soak.
+
+Live memory of `gnome-shell`: the anonymous PSS after three proven GCs and
+`malloc_trim(0)` (KB):
+
+| Session | First probe | Last probe | Lowest | Highest |
+|---|---:|---:|---:|---:|
+| Mode A | 135,760 | 137,168 | 127,780 | 137,188 |
+| Mode B | 135,808 | 137,424 | 127,912 | 137,632 |
+| Control | 102,324 | 103,096 | 101,820 | 103,096 |
+
+- The largest value rose from the first half to the second half by 300 KB
+  in mode A, by 1,268 KB in mode B, and by 772 KB in the control.
+- The plateau rule gives an added rise of -472 KB for mode A and +496 KB
+  for mode B (-0.06 and +0.06 units). The limit is 2 units (16,200 KB).
+- **The live memory of `gnome-shell` does not grow.**
+
+The updater CPU of mode A, 0.758 % of one core, is a measurement of the
+current code against NEPTUN over 24 hours. The goal 6 pairs of
+[the CPU budget record](2026-10-24-cpu-budget.md) gave 0.68 % with the
+prepared boundaries. The soak ran three GNOME sessions on one host at the
+same time, and each 35-minute value of goal 6 came from one session.
 
 ## Deadlock risk
 

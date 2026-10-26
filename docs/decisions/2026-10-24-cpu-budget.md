@@ -38,7 +38,9 @@ Reasons:
   0.9 % to 0.68 % of one core (see "Against NEPTUN"). The 0.68 % was
   measured with the prepared boundaries (the second change below), which
   were removed later. Without them, the estimate is about 2 % more updater
-  CPU: about 0.70 % of one core.
+  CPU: about 0.70 % of one core. The second 24-hour soak of
+  `2026-10-25-shell-memory.md` later measured 0.76 % of one core (label
+  mode A), with three GNOME sessions on the host at the same time.
 
 ## Changes of Task 11b
 
@@ -157,7 +159,8 @@ saved about 5 ms for each run.
 The "after" values were measured with change 2. Change 2 was removed
 later, so the current branch uses about 5 ms more CPU time for each run.
 That is about 2 % more updater CPU: the estimate is about 0.70 % of one
-core, not 0.68 %.
+core, not 0.68 %. The second 24-hour soak measured 0.76 % (see
+`2026-10-25-shell-memory.md`).
 
 ## Trust store
 

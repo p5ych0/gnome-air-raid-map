@@ -274,22 +274,25 @@ We measured these values on Fedora 44:
 
 - One run at 1920×1080 uses a median of 0.21 s of CPU time (max 0.31 s in
   1,000 runs) and 71 to 75 MB of peak memory.
-- With the real timer against NEPTUN, at 1920×1080, the average was 0.68 %
-  of one CPU core (two 35-minute measurements). That build kept a prepared
-  copy of the boundary files. The current build does not, so we estimate
-  about 2 % more updater CPU time: about 0.70 % of one core.
+- With the real timer against NEPTUN, at 1920×1080 with the default label
+  mode, the updater used 0.76 % of one CPU core over 24 hours (the second
+  soak). The soak ran three GNOME sessions on one host at the same time,
+  and the earlier 35-minute measurements (0.68 %) measured one session each.
 - At the size cap with two equal 4K monitors, a run uses 0.62 s of CPU time
   or less. With three different monitors at the cap, a run uses up to 0.95 s
   on a quiet machine. When other programs load the machine, a run can use
-  about 1.3 s. We measured these values with the prepared copy too. Without
-  it, a run uses about 5 ms more.
-- GNOME Shell over 24 hours, at 1920×1080 with the default label mode,
-  compared with a session without the updater:
-  - The updater adds 0.504 % of one CPU core to the Shell service (the
-    Shell and its glycin image loaders).
-  - The memory of `gnome-shell` rises for about 12 hours and then stops at
-    a ceiling. In the last 12 hours, its anonymous memory after one garbage
-    collection stayed at about 200 to 240 MB.
+  about 1.3 s. We measured these values with an earlier build that kept a
+  prepared copy of the boundary files. The current build uses about 5 ms
+  more for each run.
+- GNOME Shell in two 24-hour soaks, at 1920×1080, compared with a session
+  without the updater. The first soak ran on 2026-10-24. The second soak
+  ran on 2026-10-25 and 2026-10-26, with the current build.
+  - In the first soak, with the default label mode, the updater added
+    0.504 % of one CPU core to the Shell service (the Shell and its glycin
+    image loaders).
+  - In the first soak, the memory of `gnome-shell` rose for about 12 hours
+    and then stopped at a ceiling. In the last 12 hours, its anonymous
+    memory after one garbage collection stayed at about 200 to 240 MB.
   - The cause is the C library (glibc). It keeps the freed memory of old
     pictures inside `gnome-shell`, for later use. A call of `malloc_trim(0)`
     gives this memory back to the system.
@@ -300,6 +303,16 @@ We measured these values on Fedora 44:
     three garbage collections, the memory of
     `gnome-shell` rose by 7.5 MB in the first 418 changes. In the next
     3,758 changes, it rose by 1 MB.
+  - The second soak measured the live memory of `gnome-shell` each hour,
+    after three garbage collections and `malloc_trim(0)`. The live memory
+    did not grow. The plateau rule takes the rise of the largest value from
+    the first half of the soak to the second half. It subtracts the same
+    rise of the session without the updater. The result is -0.5 MB for the
+    default label mode and +0.5 MB for the label mode `unchanged`. The limit
+    is 15.8 MB.
+  - In the second soak, the updater added 0.511 % of one CPU core to the
+    Shell service with the default label mode, and 0.444 % with the label
+    mode `unchanged`.
   - The details are in
     [docs/decisions/2026-10-25-shell-memory.md](docs/decisions/2026-10-25-shell-memory.md).
 - The service limits each run to 300 MB of memory and 25 seconds.
