@@ -3,7 +3,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {test, run, assertEqual, assertTrue} from '../lib/assert.js';
 import {removeTree} from '../lib/files.js';
-import {CHECKS} from '../../updater/deps.js';
+import {CHECKS, family} from '../../updater/deps.js';
 
 // The file that each check loads. The package that check-deps.js names for a
 // missing item must be the package that has this file (#9).
@@ -27,16 +27,17 @@ const output = argv => {
     return status === 0 ? new TextDecoder().decode(stdout) : null;
 };
 
-// [index of the family in CHECKS packages, the package that owns path], or null.
-function owner(path) {
-    if (GLib.find_program_in_path('rpm')) {
+// The package that owns path in the package database of the family (0: rpm,
+// 1: dpkg), or null.
+function owner(path, index) {
+    if (index === 0 && GLib.find_program_in_path('rpm')) {
         const text = output(['rpm', '-qf', '--qf', '%{NAME}\n', path]);
-        if (text) return [0, text.split('\n')[0]];
+        if (text) return text.split('\n')[0];
     }
-    if (GLib.find_program_in_path('dpkg')) {
+    if (index === 1 && GLib.find_program_in_path('dpkg')) {
         // dpkg -S prints "<package>[:<arch>][, <package>]: <path>".
         const text = output(['dpkg', '-S', path]);
-        if (text) return [1, text.split(':')[0].split(',')[0]];
+        if (text) return text.split(':')[0].split(',')[0];
     }
     return null;
 }
@@ -44,21 +45,45 @@ function owner(path) {
 test('each check has a known file', () =>
     assertEqual(CHECKS.map(check => check.name).join(' | '), Object.keys(FILES).join(' | ')));
 
+// check-deps.js names the packages of the family of the system. Another rpm or dpkg
+// distribution can name its packages in another way, so the test compares only the
+// two known families.
 test('each named package has the file of its check', () => {
+    const index = family();
+    if (index < 0) {
+        print('# skip: the distribution family is not Fedora or Debian');
+        return;
+    }
     let checked = 0;
     for (const {name, packages} of CHECKS) {
         const path = findFile(FILES[name]);
-        const found = path && owner(path);
-        if (!found) {
+        const pkg = path && owner(path, index);
+        if (!pkg) {
             print(`# skip: no package database knows the file of ${name}`);
             continue;
         }
-        const [index, pkg] = found;
         assertEqual(packages[index], pkg, `${name} (${path})`);
         ++checked;
     }
-    assertTrue(checked > 0 || !GLib.find_program_in_path('rpm') && !GLib.find_program_in_path('dpkg'),
+    assertTrue(checked > 0 || (!GLib.find_program_in_path('rpm') && !GLib.find_program_in_path('dpkg')),
         'no check was compared with the package database');
+});
+
+test('the family comes from ID and ID_LIKE of os-release', () => {
+    const dir = GLib.dir_make_tmp('air-raid-deps-XXXXXX');
+    try {
+        const familyOf = text => {
+            GLib.file_set_contents(`${dir}/os-release`, text);
+            return family(`${dir}/os-release`);
+        };
+        assertEqual(familyOf('ID=fedora\n'), 0);
+        assertEqual(familyOf('ID="rocky"\nID_LIKE="rhel centos fedora"\n'), 0);
+        assertEqual(familyOf('ID=ubuntu\nID_LIKE=debian\n'), 1);
+        assertEqual(familyOf('ID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\n'), -1);
+        assertEqual(family(`${dir}/missing`), -1);
+    } finally {
+        removeTree(dir);
+    }
 });
 
 const CHECK_DEPS = GLib.filename_from_uri(
@@ -72,7 +97,8 @@ test('a copy under another name checks and reports a missing typelib', () => {
     try {
         GLib.file_set_contents(`${dir}/verify-packages.js`, GLib.file_get_contents(CHECK_DEPS)[1]);
         GLib.file_set_contents(`${dir}/deps.js`, `export const CHECKS = [{name: 'AirRaidMissing 1.0',
-            packages: ['air-raid-missing', 'air-raid-missing'], load: () => import('gi://AirRaidMissing')}];\n`);
+            packages: ['air-raid-missing', 'air-raid-missing'], load: () => import('gi://AirRaidMissing')}];
+            export const family = () => -1;\n`);
         const process = Gio.Subprocess.new(['gjs', '-m', `${dir}/verify-packages.js`],
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
         const [, stdout, stderr] = process.communicate_utf8(null, null);

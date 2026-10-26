@@ -2,6 +2,7 @@
 // The items that the updater needs, and the packages that have them (spec 5.8).
 // check-deps.js checks them, and tests/unit/test-check-deps.js tests the table.
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 const SCHEMA = 'org.gnome.desktop.background';
 
@@ -26,3 +27,19 @@ export const CHECKS = [
             if (!source || !source.lookup(SCHEMA, true)) throw new Error('not installed');
         }},
 ];
+
+// The index of the family of this system in the packages of CHECKS: 0 for the
+// Fedora family, 1 for the Debian family, or -1 if not known. path is the
+// os-release file; a test gives another one.
+export function family(path = '/etc/os-release') {
+    try {
+        const text = new TextDecoder().decode(GLib.file_get_contents(path)[1]);
+        const ids = ['ID', 'ID_LIKE'].flatMap(key =>
+            (new RegExp(`^${key}=["']?([^"'\\n]*)`, 'm').exec(text)?.[1] ?? '').split(/\s+/));
+        if (ids.some(id => ['fedora', 'rhel', 'centos'].includes(id))) return 0;
+        if (ids.some(id => ['debian', 'ubuntu'].includes(id))) return 1;
+    } catch (e) {
+        // No os-release file: the family is not known.
+    }
+    return -1;
+}

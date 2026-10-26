@@ -6,21 +6,7 @@
 // the package that has it.
 import GLib from 'gi://GLib';
 import System from 'system';
-import {CHECKS} from './deps.js';
-
-// 0 for the Fedora family, 1 for the Debian family, or -1 if not known.
-function family() {
-    try {
-        const text = new TextDecoder().decode(GLib.file_get_contents('/etc/os-release')[1]);
-        const ids = ['ID', 'ID_LIKE'].flatMap(key =>
-            (new RegExp(`^${key}=["']?([^"'\\n]*)`, 'm').exec(text)?.[1] ?? '').split(/\s+/));
-        if (ids.some(id => ['fedora', 'rhel', 'centos'].includes(id))) return 0;
-        if (ids.some(id => ['debian', 'ubuntu'].includes(id))) return 1;
-    } catch (e) {
-        // No /etc/os-release: name the packages of both families.
-    }
-    return -1;
-}
+import {CHECKS, family} from './deps.js';
 
 function packageText([fedora, debian], index) {
     if (index === 0) return fedora;
