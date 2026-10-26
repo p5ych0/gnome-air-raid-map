@@ -140,6 +140,8 @@ test('offline with valid cache uses the cache', () => withFixture(async ({server
     const result = await loadGeometry(session, server.base, dir, 1000000 + 7200000);
     assertEqual(result.geometry.raions.regions[0].key, 'r1');
     assertEqual(result.version, version());
+    // A network error with a valid cache is not a warning.
+    assertDeepEqual(result.warnings, []);
 }));
 
 // Boundary routes without an ETag, like the directory fixture server.
@@ -220,9 +222,10 @@ test('metadata entries hold only the etag and the check time', () => withFixture
 
 // An invalid 200 answer keeps the valid cache. The check time moves to now, so the
 // next run within MAX_CACHE_AGE_MS does not download again (#2).
-for (const [name, body] of [
-    ['invalid boundaries', JSON.stringify({a: 1})],
-    ['a body that is not JSON', '<html>not JSON</html>'],
+// The invalid answer is a warning: the server sends bad data, and the cache hides it.
+for (const [name, body, warning] of [
+    ['invalid boundaries', JSON.stringify({a: 1}), 'Invalid map boundaries'],
+    ['a body that is not JSON', '<html>not JSON</html>', 'Invalid JSON'],
 ]) {
     test(`${name} in a 200 answer renew the check time of the cache`, () =>
         withFixture(async ({server, dir, session}) => {
@@ -233,6 +236,7 @@ for (const [name, body] of [
             assertEqual(server.hits.get('/oblasts.geojson'), 2);
             assertEqual(result.geometry.oblasts.regions[0].key, 'o1');
             assertEqual(result.version, version());
+            assertDeepEqual(result.warnings, [warning]);
             assertDeepEqual(readJson(path(dir, 'geometry.json'), null).oblasts, {etag: '"o1"', checkedAt: later});
             await loadGeometry(session, server.base, dir, later + 60000);
             assertEqual(server.hits.get('/oblasts.geojson'), 2, 'the next load requests again');

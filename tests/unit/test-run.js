@@ -136,10 +136,21 @@ test('first run draws and sets the wallpaper', () => withRun(async ({paths, sett
 }));
 
 // The first run makes the runtime folder. Only the user can list it (#6).
+const modeOf = path => (Gio.File.new_for_path(path).query_info('unix::mode', Gio.FileQueryInfoFlags.NONE, null)
+    .get_attribute_uint32('unix::mode') & 0o777).toString(8);
+
 test('the runtime folder has mode 0700', () => withRun(async ({paths, once}) => {
     await once();
-    const info = Gio.File.new_for_path(paths.runtimeDir).query_info('unix::mode', Gio.FileQueryInfoFlags.NONE, null);
-    assertEqual((info.get_attribute_uint32('unix::mode') & 0o777).toString(8), '700');
+    assertEqual(modeOf(paths.runtimeDir), '700');
+}));
+
+// An older version made the runtime folder with mode 0755. It stays until logout.
+test('a runtime folder with mode 0755 has mode 0700 after a run', () => withRun(async ({paths, once}) => {
+    GLib.mkdir_with_parents(paths.runtimeDir, 0o755);
+    GLib.chmod(paths.runtimeDir, 0o755);
+    assertEqual(modeOf(paths.runtimeDir), '755');
+    await once();
+    assertEqual(modeOf(paths.runtimeDir), '700');
 }));
 
 test('same minute same data does not draw', () => withRun(async ({once}) => {

@@ -88,6 +88,10 @@ export function writePicture(surface, dir, method, name = PICTURE) {
         // Only the user can list the runtime folder.
         if (GLib.mkdir_with_parents(absDir, 0o700) !== 0)
             throw new Error(`Cannot create the folder ${absDir}`);
+        // mkdir does not change a folder that exists: an older version made it with
+        // mode 0755. A failed chmod does not stop the run, because the picture can
+        // still be written.
+        GLib.chmod(absDir, 0o700);
         if (method === 'alternate') {
             const path = nextAlternate(absDir);
             writePng(surface, path);

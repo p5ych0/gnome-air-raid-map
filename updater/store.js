@@ -63,7 +63,7 @@ function loadValid(path) {
 const entryOf = known => ({etag: known.etag, checkedAt: known.checkedAt});
 
 // Returns {geometry, version, entry, changed, warning}. warning is the error of a
-// cache write that failed, or ''.
+// cache write that failed, the error of an invalid 200 answer, or ''.
 async function loadOne(session, url, path, entry, now) {
     const cached = loadValid(path);
     const known = cached && entry && typeof entry.etag === 'string' ? entry : null;
@@ -74,11 +74,14 @@ async function loadOne(session, url, path, entry, now) {
     const kept = known ? entryOf(known) : {etag: '', checkedAt: 0};
     // A failed request or an invalid download keeps a valid cached file. After an
     // invalid 200 answer, the check time moves to now: the server answered, so the
-    // next download comes after MAX_CACHE_AGE_MS, not at the next run.
+    // next download comes after MAX_CACHE_AGE_MS, not at the next run. The invalid
+    // answer is a warning: the cache hides it from the picture. A network error with
+    // a valid cache is not a warning.
     const keepCache = (error, answered) => {
         if (!cached) throw error;
         return {geometry: cached.geometry, version: cached.version,
-            entry: answered ? {etag: kept.etag, checkedAt: now} : kept, changed: answered, warning: ''};
+            entry: answered ? {etag: kept.etag, checkedAt: now} : kept, changed: answered,
+            warning: answered ? error.message : ''};
     };
     let result;
     try {
@@ -110,7 +113,8 @@ async function loadOne(session, url, path, entry, now) {
 }
 
 // Returns {geometry, version, warnings}. warnings has one line for each cache
-// write that failed; the boundaries are valid all the same.
+// write that failed and for each invalid 200 answer that the cache replaced; the
+// boundaries are valid all the same.
 export async function loadGeometry(session, base, cacheDir, now) {
     const metaPath = GLib.build_filenamev([cacheDir, 'geometry.json']);
     const meta = readJson(metaPath, {}) || {};
