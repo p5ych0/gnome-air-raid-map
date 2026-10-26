@@ -54,8 +54,11 @@ test('a slow body stops at the total deadline', async () => {
     const session = createSession({timeout: 5});
     const start = GLib.get_monotonic_time();
     await assertRequestError(getJson(session, server.base + '/drip', {deadlineMs: 1000}), /^Network timeout$/);
+    // No upper time limit: it can fail on a loaded machine (#4). The body takes
+    // 7 x 700 ms and the idle timeout never fires, so only the deadline gives
+    // "Network timeout". The lower limit shows that the deadline did not fire early.
     const ms = (GLib.get_monotonic_time() - start) / 1000;
-    assertTrue(ms >= 1000 && ms < 2000, `rejected after ${ms} ms`);
+    assertTrue(ms >= 1000, `rejected after ${ms} ms`);
     server.stop();
 });
 

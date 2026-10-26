@@ -33,10 +33,11 @@ test('advisory markers are blue', () => {
 test('group count is drawn below the icon', () => {
     const {surface, cr, ctx} = setup();
     marker(ctx, {type: 'uav', advisory: false, heading: null, count: 3}, 20, 20, 16);
+    const read = pixelReader(surface);
     let found = false;
     for (let y = 30; y <= 38 && !found; ++y)
         for (let x = 0; x < 40 && !found; ++x)
-            if (pixelAt(surface, x, y)[0] > 200) found = true;
+            if (read(x, y)[0] > 200) found = true;
     assertTrue(found, 'no count glyph pixels');
     cr.$dispose();
 });

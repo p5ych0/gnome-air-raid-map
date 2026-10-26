@@ -126,6 +126,8 @@ export function buildView(alertsFeed, threatsFeed, geometry, now, labelMode) {
     };
 }
 
-export function renderKey(view, layout, geometryVersion) {
-    return sha256(JSON.stringify([view, layout, geometryVersion]));
+// programVersion is in the key: after an update, the new drawing code draws once,
+// also in label mode unchanged. The caller gives it, so core/ needs no updater/ import.
+export function renderKey(view, layout, geometryVersion, programVersion) {
+    return sha256(JSON.stringify([view, layout, geometryVersion, programVersion]));
 }

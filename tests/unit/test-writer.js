@@ -4,7 +4,8 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import {test, run, assertEqual, assertDeepEqual, assertTrue, assertThrows} from '../lib/assert.js';
-import {DEFAULT_RELOAD_METHOD, RELOAD_METHODS, writePicture} from '../../updater/writer.js';
+import {removeTree} from '../lib/files.js';
+import {DEFAULT_RELOAD_METHOD, RELOAD_METHODS, renameFile, writePicture} from '../../updater/writer.js';
 
 function solid(r, g, b, width = 8, height = 4) {
     const surface = new Cairo.ImageSurface(Cairo.Format.RGB24, width, height);
@@ -159,5 +160,52 @@ test('a folder that cannot be created throws', () => withDir(dir => {
     GLib.file_set_contents(`${dir}/file`, 'x');
     assertThrows(() => writePicture(solid(1, 2, 3), `${dir}/file/sub`, 'in-place'));
 }));
+
+const modeOf = path => Gio.File.new_for_path(path).query_info('unix::mode', Gio.FileQueryInfoFlags.NONE, null)
+    .get_attribute_uint32('unix::mode') & 0o777;
+
+// The runtime folder holds the picture of the user: other users cannot list it (#6).
+test('a new picture folder has mode 0700', () => {
+    const dir = GLib.dir_make_tmp('air-raid-writer-XXXXXX');
+    try {
+        writePicture(solid(1, 2, 3), `${dir}/run/gnome-air-raid-map`, 'rename');
+        assertEqual(modeOf(`${dir}/run/gnome-air-raid-map`).toString(8), '700');
+    } finally {
+        removeTree(dir);
+    }
+});
+
+function renameError(from, to) {
+    try {
+        renameFile(from, to);
+    } catch (e) {
+        return e.message;
+    }
+    return 'no error';
+}
+
+// GJS gives no errno after GLib.rename, so renameFile checks the usual causes (#6).
+test('a failed rename says why', () => {
+    const dir = GLib.dir_make_tmp('air-raid-writer-XXXXXX');
+    try {
+        const a = `${dir}/a`;
+        GLib.file_set_contents(a, 'x');
+        assertEqual(renameError(`${dir}/none`, `${dir}/b`),
+            `Cannot rename ${dir}/none to ${dir}/b: the source is missing`);
+        assertEqual(renameError(a, `${dir}/no/b`), `Cannot rename ${a} to ${dir}/no/b: the target folder is missing`);
+        GLib.mkdir_with_parents(`${dir}/ro`, 0o500);
+        // root can write in a read-only folder (the GNOME images run the tests as root).
+        if (GLib.access(`${dir}/ro`, 2) === 0)
+            print('# skip: root can write in a read-only folder');
+        else
+            assertEqual(renameError(a, `${dir}/ro/b`), `Cannot rename ${a} to ${dir}/ro/b: the target folder is not writable`);
+        // A non-empty folder as the target: none of the checks finds the cause.
+        GLib.mkdir_with_parents(`${dir}/full`, 0o700);
+        GLib.file_set_contents(`${dir}/full/keep`, 'x');
+        assertEqual(renameError(a, `${dir}/full`), `Cannot rename ${a} to ${dir}/full`);
+    } finally {
+        removeTree(dir);
+    }
+});
 
 run();

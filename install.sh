@@ -10,7 +10,10 @@ SOURCE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 APPDIR=${XDG_DATA_HOME:-$HOME/.local/share}/$APP
 UNITDIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 STATEDIR=${XDG_STATE_HOME:-$HOME/.local/state}/$APP
-CACHEDIR=${XDG_CACHE_HOME:-$HOME/.cache}/$APP
+# The cache folder of this shell. The service unit gets the same value: the systemd
+# user manager does not read a shell profile, so it can have another value.
+CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+CACHEDIR=$CACHE_HOME/$APP
 SAVED=$STATEDIR/previous-wallpaper
 # The folders of the pictures of the program: the banner, and the live map.
 PICTURE_FOLDERS=("$APPDIR")
@@ -38,6 +41,16 @@ check_unit_value() {
     case $1 in
         *[[:space:][:cntrl:]\"\'\\%\$\&\|\;]*)
             die "cannot use the path '$1' in a systemd unit: it has a space or one of the characters \" ' \\ % \$ & | ;" ;;
+    esac
+}
+
+# The value goes into a quoted Environment= line. systemd ends the value at " and reads
+# \ as an escape, and sed gives & and | a meaning. Stop on these characters and on
+# control characters. A space is allowed. The caller writes % as %%.
+check_quoted_value() {
+    case $1 in
+        *[[:cntrl:]\"\\\&\|]*)
+            die "cannot use the path '$1' in a systemd unit: it has a control character or one of the characters \" \\ & |" ;;
     esac
 }
 
@@ -167,6 +180,7 @@ install_app() {
     systemctl --user show-environment > /dev/null ||
         die "no systemd user session: systemctl --user does not answer"
     check_unit_value "$APPDIR"
+    check_quoted_value "$CACHE_HOME"
     banner_uri=$("$gjs" -c 'print(imports.gi.Gio.File.new_for_path(ARGV[0]).get_uri())' "$APPDIR/banner.png")
 
     # 1. The program. Build it in NEW, and swap it in with renames. Until the swap,
@@ -214,7 +228,8 @@ install_app() {
     for unit in "$SOURCE"/systemd/*; do
         name=$(basename "${unit%.in}")
         sed -e "s|@GJS@|$gjs|g" -e "s|@GSETTINGS@|$gsettings|g" -e "s|@APPDIR@|$APPDIR|g" \
-            -e "s|@BANNER_URI@|${banner_uri//%/%%}|g" "$unit" > "$UNITDIR/$name"
+            -e "s|@BANNER_URI@|${banner_uri//%/%%}|g" -e "s|@XDG_CACHE_HOME@|${CACHE_HOME//%/%%}|g" \
+            "$unit" > "$UNITDIR/$name"
         if grep -q '@[A-Z_]*@' "$UNITDIR/$name"; then
             die "a value in $UNITDIR/$name is not replaced"
         fi
@@ -253,7 +268,7 @@ reset_failed() {
 }
 
 uninstall_app() {
-    local gjs key value unit restored=1 saved=' ' ours=0
+    local gjs key value unit restored=1 saved=' ' ours=0 unit_cache=
     # Stop the timer first: a run after the restore would set the map again.
     systemctl --user disable --now "$TIMER" || warn "cannot stop $TIMER"
     # A run that fails while it stops (for example at its start timeout) queues
@@ -315,10 +330,21 @@ uninstall_app() {
         fi
     fi
 
+    # The service writes its cache to the XDG_CACHE_HOME of its unit. The shell of the
+    # uninstall can have another value, so delete both folders. In a unit, %% is one %.
+    if [ -f "$UNITDIR/$APP.service" ]; then
+        unit_cache=$(sed -n '/^Environment="XDG_CACHE_HOME=/{s/^Environment="XDG_CACHE_HOME=\(.*\)"$/\1/p;q}' \
+            "$UNITDIR/$APP.service") || unit_cache=
+        unit_cache=${unit_cache//%%/%}
+    fi
     for unit in "${UNITS[@]}"; do
         rm -f "$UNITDIR/$unit"
     done
     rm -rf "$APPDIR" "$NEW" "$OLD" "$CACHEDIR"
+    # Only an absolute path: a damaged line must not delete a folder below the current one.
+    if [[ $unit_cache == /* ]]; then
+        rm -rf "$unit_cache/$APP"
+    fi
     if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
         rm -rf "$XDG_RUNTIME_DIR/$APP"
     fi

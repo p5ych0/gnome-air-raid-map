@@ -56,7 +56,9 @@ export const ROTATING_TYPES = ["uav","recon","missile","ballistic","mig31k"];
 // bounds, the group count moves sideways to stay inside them, and goes above the icon
 // if it would pass the bottom. The icon never moves. Only the left, right and bottom
 // bounds are enforced: render.js draws only markers below the top of the text area,
-// so a label above the icon cannot reach the top.
+// so a label above the icon cannot reach the top. The bounds apply to the count label
+// only. The icon keeps the limits of the Plasma map (render.js visibleThreats), and
+// the text of render.js is drawn over it.
 export function marker(ctx, threat, x, y, size, bounds = null) {
     const color = threat.advisory ? "#9ad6f7" : "#ffffff";
     ctx.save();

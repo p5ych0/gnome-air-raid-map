@@ -87,6 +87,13 @@ test('layout change changes the key', () => {
     assertTrue(renderKey(v, l1, 'g1') !== renderKey(v, l2, 'g1'));
     assertTrue(renderKey(v, l1, 'g1') !== renderKey(v, l1, 'g2'));
 });
+// A new program version can draw the same data in a new way (#6).
+test('a new program version changes the key', () => {
+    const v = view(fresh, freshThreats, 'unchanged');
+    const l = pictureLayout(parseDisplayOverride('1920x1080@1'));
+    assertTrue(renderKey(v, l, 'g1', '0.1.0') !== renderKey(v, l, 'g1', '0.2.0'));
+    assertEqual(renderKey(v, l, 'g1', '0.1.0'), renderKey(v, l, 'g1', '0.1.0'));
+});
 
 // Two regions, so that alert entries can come in a different order.
 function twoRegionGeometry() {

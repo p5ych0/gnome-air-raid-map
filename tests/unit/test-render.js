@@ -268,6 +268,29 @@ test('a group count at the map edge stays inside the 64 px margin', () => {
     assertEqual(differ(0, 64), 0, 'label ink in the left margin');
 });
 
+// Markers keep the Plasma limits, so a marker can be under the legend. The text is
+// drawn after the markers and stays readable (#3).
+test('the legend text is drawn over a marker', () => {
+    const noThreats = {threats: {points: [], areas: [], count: 0}};
+    const without = draw(noThreats);
+    // The red dot of the legend: its opaque pixels, at the bottom left of the text area.
+    const dot = [];
+    for (let y = 1080 - 64 - 30; y < 1080 - 64; ++y)
+        for (let x = LEFT; x < LEFT + 20; ++x)
+            if (near(without(x, y), '#cf4655', 3)) dot.push([x, y]);
+    assertTrue(dot.length > 10, `the legend dot has ${dot.length} pixels`);
+    const cx = Math.round(dot.reduce((sum, [x]) => sum + x, 0) / dot.length);
+    const cy = Math.round(dot.reduce((sum, [, y]) => sum + y, 0) / dot.length);
+    // The map point at the center of the dot.
+    const point = [t.bounds[0] + (cx - t.ox) / t.scale, t.bounds[1] + (cy - t.oy) / t.scale];
+    assertEqual(visibleThreats([{point}], t, 1920, 1080).length, 1, 'the marker is not drawn');
+    const under = draw({threats: {points: [{type: 'unknown', point, advisory: false, heading: null, count: 1}],
+        areas: [], count: 1}});
+    assertTrue(countIn(under, cx - 8, cy - 8, cx + 9, cy + 9, p => near(p, '#ffffff', 3)) > 0, 'no marker at the dot');
+    const covered = dot.filter(([x, y]) => !near(under(x, y), '#cf4655', 3));
+    assertEqual(covered.length, 0, 'marker pixels over the legend dot');
+});
+
 test('the overflow count includes items cut by the height bound', () => {
     // 1366x768: the count limit is 8, but only 6 three-line items (69 px) fit in the
     // 525 px above the legend block with the overflow line (17 px).

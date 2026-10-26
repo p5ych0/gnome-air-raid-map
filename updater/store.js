@@ -62,40 +62,59 @@ function loadValid(path) {
 // older file are not written back.
 const entryOf = known => ({etag: known.etag, checkedAt: known.checkedAt});
 
+// Returns {geometry, version, entry, changed, warning}. warning is the error of a
+// cache write that failed, the error of an invalid 200 answer, or ''.
 async function loadOne(session, url, path, entry, now) {
     const cached = loadValid(path);
     const known = cached && entry && typeof entry.etag === 'string' ? entry : null;
     if (cached && known && typeof known.checkedAt === 'number' &&
         now - known.checkedAt >= 0 && now - known.checkedAt < MAX_CACHE_AGE_MS)
-        return {geometry: cached.geometry, version: cached.version, entry: entryOf(known), changed: false};
-    // A failed request or an invalid download keeps a valid cached file.
-    const keepCache = error => {
+        return {geometry: cached.geometry, version: cached.version, entry: entryOf(known), changed: false, warning: ''};
+    // The entry for the file on disk now.
+    const kept = known ? entryOf(known) : {etag: '', checkedAt: 0};
+    // A failed request or an invalid download keeps a valid cached file. After an
+    // invalid 200 answer, the check time moves to now: the server answered, so the
+    // next download comes after MAX_CACHE_AGE_MS, not at the next run. The invalid
+    // answer is a warning: the cache hides it from the picture. A network error with
+    // a valid cache is not a warning.
+    const keepCache = (error, answered) => {
         if (!cached) throw error;
         return {geometry: cached.geometry, version: cached.version,
-            entry: known ? entryOf(known) : {etag: '', checkedAt: 0}, changed: false};
+            entry: answered ? {etag: kept.etag, checkedAt: now} : kept, changed: answered,
+            warning: answered ? error.message : ''};
     };
     let result;
     try {
         result = await getJson(session, url, {etag: cached && known ? known.etag : null});
     } catch (e) {
-        return keepCache(e);
+        return keepCache(e, e.status === 200);
     }
     // getJson sends If-None-Match only with a non-empty ETag. Any other 304 is a failed request.
     if (result.status === 304 && cached && known && known.etag)
         return {geometry: cached.geometry, version: cached.version,
-            entry: {etag: known.etag, checkedAt: now}, changed: true};
-    if (result.status === 304) return keepCache(new Error('Unexpected HTTP 304'));
+            entry: {etag: known.etag, checkedAt: now}, changed: true, warning: ''};
+    if (result.status === 304) return keepCache(new Error('Unexpected HTTP 304'), false);
     let geometry;
     try {
         geometry = prepareGeometry(result.json);
     } catch (e) {
-        return keepCache(e);
+        return keepCache(e, true);
     }
     const text = JSON.stringify(result.json);
-    writeTextAtomic(path, text);
-    return {geometry, version: sha256(text), entry: {etag: result.etag || '', checkedAt: now}, changed: true};
+    const version = sha256(text);
+    try {
+        writeTextAtomic(path, text);
+    } catch (e) {
+        // A full or read-only cache does not lose a valid download. The entry stays
+        // the entry of the file on disk: the new ETag must not point to old content.
+        return {geometry, version, entry: kept, changed: false, warning: e.message};
+    }
+    return {geometry, version, entry: {etag: result.etag || '', checkedAt: now}, changed: true, warning: ''};
 }
 
+// Returns {geometry, version, warnings}. warnings has one line for each cache
+// write that failed and for each invalid 200 answer that the cache replaced; the
+// boundaries are valid all the same.
 export async function loadGeometry(session, base, cacheDir, now) {
     const metaPath = GLib.build_filenamev([cacheDir, 'geometry.json']);
     const meta = readJson(metaPath, {}) || {};
@@ -103,10 +122,17 @@ export async function loadGeometry(session, base, cacheDir, now) {
         GLib.build_filenamev([cacheDir, `${name}.geojson`]), entry, now);
     // Both files load at the same time, so a slow server costs one deadline, not two.
     const [oblasts, raions] = await Promise.all([load('oblasts', meta.oblasts), load('raions', meta.raions)]);
-    if (oblasts.changed || raions.changed)
-        writeJsonAtomic(metaPath, {oblasts: oblasts.entry, raions: raions.entry});
+    const warnings = [oblasts.warning, raions.warning].filter(warning => warning !== '');
+    if (oblasts.changed || raions.changed) {
+        try {
+            writeJsonAtomic(metaPath, {oblasts: oblasts.entry, raions: raions.entry});
+        } catch (e) {
+            warnings.push(e.message);
+        }
+    }
     return {
         geometry: {oblasts: oblasts.geometry, raions: raions.geometry},
         version: `${oblasts.version}|${raions.version}`,
+        warnings,
     };
 }

@@ -38,6 +38,10 @@ export function toScreen(t, point) {
 }
 
 // Do not clamp off-map reports to a false position at the edge.
+// The markers keep the limits of the Plasma map (x 0..w, y 80..h-60), not the text
+// margins: a marker shows a position, and moving or hiding it would hide a real report.
+// So a marker can be inside the 64 px margin or under the legend. drawMonitor draws the
+// text after the map, so the text stays readable over a marker.
 export function visibleThreats(points, t, width, height) {
     return points.filter(threat => {
         const [x, y] = toScreen(t, threat.point);
@@ -297,6 +301,7 @@ export function drawMonitor(cr, rect, geometry, view) {
         cr.paint();
         if (geometry)
             drawMap(new Canvas2D(cr), geometry, view, w, h);
+        // The text comes last: it covers a marker, a marker never covers it.
         drawText(cr, geometry, view, w, h);
     } finally {
         cr.restore();

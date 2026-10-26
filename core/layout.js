@@ -14,9 +14,11 @@ export function pictureLayout(display, cap = PIXEL_CAP) {
     const bottom = Math.max(...monitors.map(m => m.y + m.height));
     if (!(right - left > 0 && bottom - top > 0)) throw new Error('Empty monitor layout');
     const area = (right - left) * k * (bottom - top) * k;
-    const c = area > cap ? Math.sqrt(cap / area) : 1;
+    let c = area > cap ? Math.sqrt(cap / area) : 1;
     // Each edge is rounded on its own, so neighbors share edges exactly.
     const edge = v => Math.round(v * k * c);
+    // The rounding can add a few pixels. Reduce c until the rounded size fits in the cap.
+    while (edge(right - left) * edge(bottom - top) > cap) c *= 0.99999;
     return {
         width: edge(right - left),
         height: edge(bottom - top),

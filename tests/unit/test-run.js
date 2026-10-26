@@ -135,6 +135,24 @@ test('first run draws and sets the wallpaper', () => withRun(async ({paths, sett
     assertTrue(typeof state.renderKey === 'string' && state.renderKey.length > 0, 'no render key');
 }));
 
+// The first run makes the runtime folder. Only the user can list it (#6).
+const modeOf = path => (Gio.File.new_for_path(path).query_info('unix::mode', Gio.FileQueryInfoFlags.NONE, null)
+    .get_attribute_uint32('unix::mode') & 0o777).toString(8);
+
+test('the runtime folder has mode 0700', () => withRun(async ({paths, once}) => {
+    await once();
+    assertEqual(modeOf(paths.runtimeDir), '700');
+}));
+
+// An older version made the runtime folder with mode 0755. It stays until logout.
+test('a runtime folder with mode 0755 has mode 0700 after a run', () => withRun(async ({paths, once}) => {
+    GLib.mkdir_with_parents(paths.runtimeDir, 0o755);
+    GLib.chmod(paths.runtimeDir, 0o755);
+    assertEqual(modeOf(paths.runtimeDir), '755');
+    await once();
+    assertEqual(modeOf(paths.runtimeDir), '700');
+}));
+
 test('same minute same data does not draw', () => withRun(async ({once}) => {
     const first = await once();
     const second = await once({now: now + 20000});
@@ -148,6 +166,15 @@ test('a new minute draws again under the same file name', () => withRun(async ({
     assertEqual(second.drew, true);
     // The Shell watches the file that it shows and loads it again after the rename.
     assertEqual(second.uri, first.uri);
+}));
+
+// After an update, the new drawing code draws once, also in label mode unchanged (#6).
+test('a new program version draws once with unchanged data', () => withRun(async ({once}) => {
+    const run = (n, version) => once({labelMode: 'unchanged', now: now + n * 60000, version});
+    assertEqual((await run(0, '0.0.1')).drew, true);
+    assertEqual((await run(1, '0.0.1')).drew, false, 'the same version draws again');
+    assertEqual((await run(2, '0.0.2')).drew, true, 'the new version does not draw');
+    assertEqual((await run(3, '0.0.2')).drew, false, 'the new version draws again');
 }));
 
 test('a missing picture is drawn again', () => withRun(async ({once}) => {
@@ -283,6 +310,21 @@ for (const [name, route] of [
         assertEqual(state.alerts.payload, null);
     }, {...routes(), '/oblasts.geojson': route}));
 }
+
+// A full or read-only cache folder (#2, #6): the download is valid, so the picture
+// shows the map, not the loading message. A cache folder that is a file makes every
+// write fail, also for root.
+test('a cache that cannot be written still draws the map', () => withRun(async ({dir, paths, once}) => {
+    GLib.mkdir_with_parents(`${dir}/cache`, 0o700);
+    GLib.file_set_contents(paths.cacheDir, 'not a folder');
+    const result = await once();
+    assertEqual(result.drew, true);
+    const read = readPicture(result.uri);
+    assertColorNear(read(...INSIDE), '#cf4655');
+    assertTrue(!hasLoadingMessage(read), 'the loading message is drawn');
+    assertTrue(result.warnings.length === 2 && result.warnings.every(w => w.startsWith('boundary cache: ')),
+        `warnings: ${JSON.stringify(result.warnings)}`);
+}));
 
 test('boundaries come back after an outage', () => withRun(async ({server, once}) => {
     const loading = await once();

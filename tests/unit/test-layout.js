@@ -27,6 +27,21 @@ test('cap keeps the aspect ratio', () => {
   assertTrue(Math.abs(l.width / l.height - 11520 / 2160) < 0.002);
   assertEqual(l.monitors[2].x + l.monitors[2].width, l.width);
 });
+// Each edge is rounded after the cap factor, and the rounding can add pixels (#3).
+test('two 5K monitors fit in the cap after the rounding', () => {
+  const l = pictureLayout(L([0,0,5120,2880,1],[5120,0,5120,2880,1]));
+  assertTrue(l.width * l.height <= PIXEL_CAP, `${l.width} x ${l.height} = ${l.width * l.height}`);
+  assertEqual(l.monitors[0].width + l.monitors[1].width, l.width);
+});
+test('every capped size fits in the cap', () => {
+  const over = [];
+  for (let w = 3000; w <= 9000; w += 37)
+    for (let h = 1500; h <= 5000; h += 41) {
+      const l = pictureLayout(L([0,0,w,h,1]));
+      if (l.width * l.height > PIXEL_CAP) over.push(`${w}x${h}`);
+    }
+  assertEqual(over.length, 0, `over the cap: ${over.slice(0, 5).join(' ')}`);
+});
 test('physical mode scales text, not the picture', () => assertDeepEqual(
   pictureLayout({mode:'physical', monitors:[{x:0,y:0,width:3840,height:2160,scale:2,primary:true}]}),
   {width:3840, height:2160, monitors:[{x:0,y:0,width:3840,height:2160,scale:2}]}));
