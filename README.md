@@ -117,10 +117,11 @@ picture, or the settings of other users.
 
 These paths are the defaults. If you set `XDG_DATA_HOME`, `XDG_CONFIG_HOME`,
 `XDG_STATE_HOME`, or `XDG_CACHE_HOME`, the program uses those folders. The
-installer reads them in the shell that runs it. It writes `XDG_DATA_HOME`,
-`XDG_STATE_HOME`, and `XDG_CACHE_HOME` into the service unit, so the updater
-uses the same folders, also when the systemd user manager has other values.
-Run the uninstall from a shell with the same values.
+installer reads them in the shell that runs it. It writes `XDG_CACHE_HOME`
+into the service unit, so the updater uses the same cache folder, also when
+the systemd user manager has another value. The uninstall reads the cache
+folder from the unit. Run the uninstall from a shell with the same values of
+the other three variables.
 
 The installer enables the timer for `graphical-session.target`. The updater
 sets these keys of `org.gnome.desktop.background`:

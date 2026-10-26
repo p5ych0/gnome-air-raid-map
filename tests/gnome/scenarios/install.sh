@@ -32,10 +32,11 @@
 # moves the old program back and starts the timer; 19 leave the old program in
 # $APPDIR.old and a complete $APPDIR.new with $APPDIR absent, as a SIGKILL between the
 # two renames does, and make the copy of the next install fail: the old program is
-# moved back first, and the failure script does not run; 20 install with XDG folders
-# that only the shell of the installer has, as from a shell profile: the service unit
-# sets them, a run of the service writes its cache there, and the uninstall from the
-# same shell deletes the folders of the program there.
+# moved back first, and the failure script does not run; 20 install with an
+# XDG_CACHE_HOME that only the shell of the installer has, with a space and a %: the
+# service unit sets it and no other XDG folder, and a run of the service writes its
+# cache there; 21 uninstall from a shell with another XDG_CACHE_HOME: the uninstall
+# reads the cache folder of the unit and deletes it.
 # Step 8 also checks that the uninstall deletes the staging folders.
 # Prints "ok - <check>" or "not ok - <check>" for each check, and "#" lines. The
 # "#   shell.log:" lines are the new lines of the Shell log after each step.
@@ -247,13 +248,14 @@ with_gsettings_stub() {
 # the quotes, as systemd does; the lines come from the units that install.sh wrote
 # from systemd/*.in in this disposable container. With <gsettings>, the lines use
 # that program in place of the gsettings path in the unit. env adds the variables of
-# the Environment= lines, as systemd does; install.sh writes only values without
-# spaces or quotes (check_unit_value).
+# the Environment= lines, as systemd does: eval removes the quotes of a quoted value,
+# and %% is one %.
 run_unit() {
     local line code=0 variables
     : > "$OUT/$2.stdout"
     : > "$OUT/$2.stderr"
     variables=$(sed -n 's/^Environment=//p' "$UNITDIR/$1" | tr '\n' ' ')
+    variables=${variables//%%/%}
     while IFS= read -r line; do
         line=${line//%%/%}
         echo "#   ExecStart=$line"
@@ -789,29 +791,37 @@ check "step 19: the old program is intact, so the failure script did not run" \
 check "step 19: the service still runs and sets the live picture" run_unit "$APP.service" service-9
 check "step 19: the wallpaper keys point to the new live picture" live_keys "$(state_value state.picture | tr -d '"')"
 
-# Step 20: XDG folders that only the shell of the installer has (#6). The systemd user
-# manager does not have them, so the service must get them from its unit. run_unit
-# runs the service without them, as the manager does. Step 19 left the program in the
-# default folders: uninstall it first.
-check "step 20: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall-5 --uninstall
-XDG20=/tmp/step-20
-# with_xdg <command ...>: runs the command with the XDG folders of step 20.
-with_xdg() {
-    XDG_CACHE_HOME=$XDG20/cache XDG_STATE_HOME=$XDG20/state XDG_DATA_HOME=$XDG20/data "$@"
+# with_cache <folder> <command ...>: runs the command with XDG_CACHE_HOME=<folder>.
+with_cache() {
+    local folder=$1
+    shift
+    XDG_CACHE_HOME=$folder "$@"
 }
-check "step 20: install.sh with the XDG folders of the shell exits 0" with_xdg install_run install-21
-check "step 20: the service unit sets the three XDG folders of the installer" has_lines "$UNITDIR/$APP.service" \
-    "Environment=XDG_CACHE_HOME=$XDG20/cache" "Environment=XDG_STATE_HOME=$XDG20/state" \
-    "Environment=XDG_DATA_HOME=$XDG20/data"
+
+# Step 20: an XDG_CACHE_HOME that only the shell of the installer has (#6), with a
+# space and a %. The systemd user manager does not have it, so the service gets it
+# from its unit. run_unit runs the service without it, as the manager does. Step 19
+# left the program in the default folders: uninstall it first.
+check "step 20: install.sh --uninstall exits 0" with_gsettings_stub install_run uninstall-5 --uninstall
+CACHE20='/tmp/step 20/100% cache'
+check "step 20: install.sh with an XDG_CACHE_HOME with a space and a % exits 0" \
+    with_cache "$CACHE20" install_run install-21
+check "step 20: the service unit sets the XDG_CACHE_HOME of the installer, quoted, with %%" \
+    has_lines "$UNITDIR/$APP.service" 'Environment="XDG_CACHE_HOME=/tmp/step 20/100%% cache"'
+check "step 20: the service unit sets no other XDG folder" \
+    not grep -qE '^Environment=.*XDG_(STATE|DATA|CONFIG|RUNTIME)' "$UNITDIR/$APP.service"
 check "step 20: no @...@ value is left in the units" no_placeholders
-check "step 20: the service runs without the XDG folders in its environment" run_unit "$APP.service" service-10
+check "step 20: the service runs without XDG_CACHE_HOME in its environment" run_unit "$APP.service" service-10
 check "step 20: the run wrote its cache under the XDG_CACHE_HOME of the installer" \
-    all_exist "$XDG20/cache/$APP/oblasts.geojson" "$XDG20/cache/$APP/raions.geojson" "$XDG20/cache/$APP/geometry.json"
+    all_exist "$CACHE20/$APP/oblasts.geojson" "$CACHE20/$APP/raions.geojson" "$CACHE20/$APP/geometry.json"
 check "step 20: the run wrote no cache in the default folder" none_exist "$CACHEDIR"
-check "step 20: install.sh --uninstall from the same shell exits 0" \
-    with_gsettings_stub with_xdg install_run uninstall-6 --uninstall
-check "step 20: the program, cache, state and runtime folders are gone" \
-    none_exist "$XDG20/data/$APP" "$XDG20/cache/$APP" "$XDG20/state/$APP" "$RUNDIR"
+
+# Step 21: the uninstall runs from a shell with another XDG_CACHE_HOME. It reads the
+# cache folder of the service from the unit, and deletes it too.
+check "step 21: install.sh --uninstall from a shell with another XDG_CACHE_HOME exits 0" \
+    with_gsettings_stub with_cache /tmp/step-21-other install_run uninstall-6 --uninstall
+check "step 21: the cache folder of the install is gone" none_exist "$CACHE20/$APP"
+check "step 21: the program, state and runtime folders are gone" none_exist "$APPDIR" "$STATEDIR" "$RUNDIR"
 
 echo "# install: $status (0: every check passed)"
 exit $status
