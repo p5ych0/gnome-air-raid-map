@@ -73,6 +73,9 @@ export class Canvas2D {
     }
 
     // Clears the state stack, the transform, the path and the style properties.
+    // The transform becomes the identity, not the transform at construction:
+    // drawMonitor (render.js) translates and scales the context before it makes the
+    // adapter, and reset() removes that offset and scale. No drawing code calls reset().
     reset() {
         while (this._stack.length) this.restore();
         this._cr.identityMatrix();
@@ -152,7 +155,8 @@ export class Canvas2D {
     }
 
     // Fills the glyph outlines, as Qt Quick Canvas does. The antialiasing is then
-    // grayscale, even when fontconfig asks for subpixel rendering.
+    // grayscale, even when fontconfig asks for subpixel rendering. It clears the
+    // current path: an HTML canvas keeps it. Build a path again after a text call.
     fillText(text, x, y) {
         const layout = this._layout(text);
         this._source(this.fillStyle);
@@ -162,6 +166,7 @@ export class Canvas2D {
         this._cr.fill();
     }
 
+    // Strokes the glyph outlines. It clears the current path, as fillText does.
     strokeText(text, x, y) {
         const layout = this._layout(text);
         this._source(this.strokeStyle);

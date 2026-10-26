@@ -8,6 +8,7 @@ import {acceptAlerts, acceptThreats, buildView, emptyFeed, failFeed, renderKey} 
 import {getJson} from './net.js';
 import {loadGeometry, readJson, writeJsonAtomic} from './store.js';
 import {applyLive, checkLive, showsPicture} from './wallpaper.js';
+import {VERSION} from './version.js';
 import {DEFAULT_RELOAD_METHOD, removeFile, renameFile, writePicture} from './writer.js';
 
 const STATE_VERSION = 1;
@@ -117,8 +118,9 @@ function applyResponse(feed, settled, accept) {
 // for each fallback; the data in the picture is then stale, but the run did its work.
 // Rejects only on a run error: no monitor layout now and none in the state file, or
 // an error while drawing or writing the picture or setting the wallpaper.
+// version is the program version in the render key (core/view.js renderKey).
 export async function runOnce({session, settings, display, paths, now, base,
-    labelMode = 'updated', reloadMethod = DEFAULT_RELOAD_METHOD, pictureOptions = 'spanned'}) {
+    labelMode = 'updated', reloadMethod = DEFAULT_RELOAD_METHOD, pictureOptions = 'spanned', version = VERSION}) {
     const warnings = [];
     const state = readState(paths.statePath);
     // Before the requests: a run that cannot draw does not poll the server.
@@ -146,7 +148,7 @@ export async function runOnce({session, settings, display, paths, now, base,
     if (threats.error) warnings.push(`threats: ${threats.error}`);
 
     const view = buildView(alerts, threats, geometry, now, labelMode);
-    const key = renderKey(view, layout, geometryVersion);
+    const key = renderKey(view, layout, geometryVersion, version);
     // The live picture of the last run. Only a file in the runtime folder is ours.
     const dir = Gio.File.new_for_path(paths.runtimeDir).get_path();
     const previous = GLib.path_get_dirname(state.picture) === dir ? state.picture : '';

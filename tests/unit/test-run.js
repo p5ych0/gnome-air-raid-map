@@ -150,6 +150,15 @@ test('a new minute draws again under the same file name', () => withRun(async ({
     assertEqual(second.uri, first.uri);
 }));
 
+// After an update, the new drawing code draws once, also in label mode unchanged (#6).
+test('a new program version draws once with unchanged data', () => withRun(async ({once}) => {
+    const run = (n, version) => once({labelMode: 'unchanged', now: now + n * 60000, version});
+    assertEqual((await run(0, '0.0.1')).drew, true);
+    assertEqual((await run(1, '0.0.1')).drew, false, 'the same version draws again');
+    assertEqual((await run(2, '0.0.2')).drew, true, 'the new version does not draw');
+    assertEqual((await run(3, '0.0.2')).drew, false, 'the new version draws again');
+}));
+
 test('a missing picture is drawn again', () => withRun(async ({once}) => {
     const first = await once();
     Gio.File.new_for_uri(first.uri).delete(null);
